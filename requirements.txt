@@ -1,0 +1,4 @@
+qtpy
+pyqt6
+pyqtgraph
+soapy-power
