@@ -536,6 +536,10 @@
   <property name="windowTitle">
    <string>SpectroScope</string>
   </property>
+  <property name="windowIcon">
+   <iconset>
+    <normaloff>spectroscope.svg</normaloff>spectroscope.svg</iconset>
+  </property>
   <property name="tabShape">
    <enum>QTabWidget::Rounded</enum>
   </property>
@@ -638,10 +642,6 @@
      <width>233</width>
      <height>111</height>
     </size>
-   </property>
-   <property name="windowIcon">
-    <iconset>
-     <normaloff>spectroscope.svg</normaloff>spectroscope.svg</iconset>
    </property>
    <property name="features">
     <set>QDockWidget::DockWidgetFloatable|QDockWidget::DockWidgetMovable</set>
