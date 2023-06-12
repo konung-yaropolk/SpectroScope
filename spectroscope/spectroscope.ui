@@ -639,6 +639,10 @@
      <height>111</height>
     </size>
    </property>
+   <property name="windowIcon">
+    <iconset>
+     <normaloff>spectroscope.svg</normaloff>spectroscope.svg</iconset>
+   </property>
    <property name="features">
     <set>QDockWidget::DockWidgetFloatable|QDockWidget::DockWidgetMovable</set>
    </property>
