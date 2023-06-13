@@ -40,8 +40,8 @@ setup(
     description=("Spectrum analyzer for multiple SDR platforms "
                  "(PyQtGraph based GUI for soapy_power, hackrf_sweep, rtl_power, rx_power and other backends)"),
     long_description=open('README.rst').read(),
-    author="Michal Krenek (Mikos)",
-    author_email="m.krenek@gmail.com",
+    author="konung-yaropolk",
+    author_email="yaropolk1995@gmail.com",
     url="https://github.com/konung-yaropolk/spectroscope",
     license="GNU GPLv3",
     packages=["spectroscope", "spectroscope.backends"],
