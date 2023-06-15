@@ -10,4 +10,5 @@ pyuic6 spectroscope_settings_help.ui -o ui_spectroscope_settings_help.py
 pyuic6 spectroscope_settings.ui -o ui_spectroscope_settings.py
 pyuic6 spectroscope_smoothing.ui -o ui_spectroscope_smoothing.py
 
-
+echo "Do anykey to exit..."
+read
