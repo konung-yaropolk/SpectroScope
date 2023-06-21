@@ -510,7 +510,7 @@ def main():
 
     # Parse command line arguments
     parser = argparse.ArgumentParser(
-        prog="spectroscope",
+        prog="SpectroScope",
         description="Spectrum analyzer for multiple SDR platforms",
     )
     parser.add_argument("--debug", action="store_true",
@@ -529,7 +529,7 @@ def main():
         # Start PyQt application
         app = QtWidgets.QApplication(sys.argv[:1] + unparsed_args)
         app.setOrganizationName("SpectroScope")
-        app.setOrganizationDomain("spectroscope.eutopia.cz")
+        app.setOrganizationDomain("spectroscope.io")
         app.setApplicationName("SpectroScope")
         window = SpectroScopeMainWindow()
         sys.exit(app.exec_())
