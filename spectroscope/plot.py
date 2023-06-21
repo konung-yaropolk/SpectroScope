@@ -54,15 +54,18 @@ class SpectrumPlotWidget:
         self.create_peak_hold_max_curve()
         self.create_main_curve()
 
-        # Create crosshair
-        self.vLine = pg.InfiniteLine(angle=90, movable=False)
-        self.vLine.setZValue(1000)
-        self.hLine = pg.InfiniteLine(angle=0, movable=False)
-        self.vLine.setZValue(1000)
-        self.plot.addItem(self.vLine, ignoreBounds=True)
-        self.plot.addItem(self.hLine, ignoreBounds=True)
+        # Create crosshair (cancelled)
+
+        # self.vLine = pg.InfiniteLine(angle=90, movable=False)
+        # self.vLine.setZValue(1000)
+        # self.hLine = pg.InfiniteLine(angle=0, movable=False)
+        # self.vLine.setZValue(1000)
+        # self.plot.addItem(self.vLine, ignoreBounds=True)
+        # self.plot.addItem(self.hLine, ignoreBounds=True)
+
+        # Update mouse coordinates
         self.mouseProxy = pg.SignalProxy(self.plot.scene().sigMouseMoved,
-                                         rateLimit=60, slot=self.mouse_moved)
+                                         rateLimit=30, slot=self.mouse_moved)
 
     def create_main_curve(self):
         """Create main spectrum curve"""
@@ -223,7 +226,7 @@ class SpectrumPlotWidget:
         QtCore.QTimer.singleShot(0, lambda: self.update_persistence(data_storage, force=True))
 
     def mouse_moved(self, evt):
-        """Update crosshair when mouse is moved"""
+        """Update coordinates when mouse is moved"""
         pos = evt[0]
         if self.plot.sceneBoundingRect().contains(pos):
             mousePoint = self.plot.vb.mapSceneToView(pos)
@@ -233,8 +236,10 @@ class SpectrumPlotWidget:
                     mousePoint.y()
                 )
             )
-            self.vLine.setPos(mousePoint.x())
-            self.hLine.setPos(mousePoint.y())
+            
+            # Update crosshair when mouse is moved (cancelled):            
+            # self.vLine.setPos(mousePoint.x())
+            # self.hLine.setPos(mousePoint.y())
 
     def clear_plot(self):
         """Clear main spectrum curve"""
