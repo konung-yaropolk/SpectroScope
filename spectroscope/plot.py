@@ -41,7 +41,7 @@ class SpectrumPlotWidget:
         self.plot.showGrid(x=True, y=True)
         self.plot.setLabel("left", "Power", units="dB")
         self.plot.setLabel("bottom", "Frequency", units="Hz")
-        self.plot.setLimits(xMin=0)
+        self.plot.setLimits(xMin=0, xMax=100000000000, yMin=-100, yMax=100)
         self.plot.showButtons()
 
         #self.plot.setDownsampling(mode="peak")
@@ -294,7 +294,7 @@ class WaterfallPlotWidget:
         self.plot.setLabel("left", "Time")
 
         self.plot.setYRange(-self.history_size, 0)
-        self.plot.setLimits(xMin=0, yMax=0)
+        self.plot.setLimits(xMin=0, xMax=100000000000, yMax=0)    # yMin=31536000 - one year limit (doesn't work correct)
         self.plot.showButtons()
         #self.plot.setAspectLocked(True)
 
