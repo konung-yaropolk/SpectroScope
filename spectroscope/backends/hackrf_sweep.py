@@ -116,7 +116,8 @@ class PowerThread(BasePowerThread):
         """Parse one buf of output from hackrf_sweep"""
         (low_edge, high_edge) = struct.unpack('QQ', buf[:16])
         data = np.fromstring(buf[16:], dtype='<f4')
-        step = (high_edge - low_edge) / len(data)
+        #step = (high_edge - low_edge) / len(data)
+        step = (high_edge - low_edge) / data.size
 
         if (low_edge // 1000000) <= (self.params["start_freq"] - self.lnb_lo / 1e6):
             # Reset databuffer at the start of each sweep even if we somehow
@@ -124,8 +125,7 @@ class PowerThread(BasePowerThread):
             self.databuffer = {"timestamp": [], "x": [], "y": []}
         x_axis = list(np.arange(low_edge + self.lnb_lo + step / 2, high_edge + self.lnb_lo, step))
         self.databuffer["x"].extend(x_axis)
-        for i in range(len(data)):
-            self.databuffer["y"].append(data[i])
+        self.databuffer["y"].extend(data)
         if (high_edge / 1e6) >= (self.params["stop_freq"] - self.lnb_lo / 1e6):
             # We've reached the end of a pass. If it went too fast for our sweep interval, ignore it
             t_finish = time.time()
@@ -144,7 +144,7 @@ class PowerThread(BasePowerThread):
         self.alive = True
         self.powerThreadStarted.emit()
 
-        while self.alive:
+        while self.alive and self.process is not None:
             try:
                 buf = self.process.stdout.read(4)
             except AttributeError as e:
