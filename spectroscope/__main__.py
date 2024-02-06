@@ -263,7 +263,7 @@ class SpectroScopeMainWindow(QtWidgets.QMainWindow, Ui_SpectroScopeMainWindow):
     def update_progress(self, value):
         """Update progress bar"""
         value *= 1000
-        value_max = self.intervalSpinBox.value() * 1000
+        value_max = int(self.intervalSpinBox.value() * 1000)
 
         if value_max < 1000:
             return
@@ -299,7 +299,7 @@ class SpectroScopeMainWindow(QtWidgets.QMainWindow, Ui_SpectroScopeMainWindow):
         self.start_timestamp = self.prev_data_timestamp
 
         if self.intervalSpinBox.value() >= 1:
-            self.progressbar.setRange(0, self.intervalSpinBox.value() * 1000)
+            self.progressbar.setRange(0, int(self.intervalSpinBox.value() * 1000))
         else:
             self.progressbar.setRange(0, 0)
         self.update_progress(0)
