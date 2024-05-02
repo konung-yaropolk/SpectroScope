@@ -144,45 +144,12 @@ Ubuntu:
 
 
 
-<!---
-Windows:
-********
-
-*Only 64-bit Windows are supported (there are no public 32-bit builds of SoapySDR
-libraries and drivers).*
-
-1. install `SoapySDR <https://github.com/pothosware/SoapySDR/wiki>`_ libraries and drivers
-   (bundled as part of Pothos SDR installer: `download <http://downloads.myriadrf.org/builds/PothosSDR/?C=M;O=D>`_).
-   This bundle also includes other great SDR apps like `CubicSDR <http://cubicsdr.com>`_, `GQRX <http://gqrx.dk>`_,
-   `GNU Radio Companion <https://gnuradio.org>`_, `Pothos GUI <https://github.com/pothosware/pothos/wiki>`_,
-   `Lime Suite <https://github.com/myriadrf/LimeSuite>`_ and `Zadig <http://zadig.akeo.ie>`_.
-   Utilities like ``hackrf_sweep`` and ``rtl_power`` are also included.
-2. download SpectroScope installer or portable zip archive from GitHub
-   `releases <https://github.com/konung-yaropolk/spectroscope/releases>`_ page
-3. after you connect your SDR device, you have to run `Zadig <http://zadig.akeo.ie>`_ to install USB drivers
-
-
-
-
-You can also install SpectroScope manually from `PyPI <https://pypi.python.org>`_:
-
-1. install Python 3.6.x (64-bit) from `python.org <https://www.python.org>`_ and add Python to PATH
-2. install `SoapySDR <https://github.com/pothosware/SoapySDR/wiki>`_ libraries and drivers
-   (bundled as part of Pothos SDR installer: `download <http://downloads.myriadrf.org/builds/PothosSDR/?C=M;O=D>`_)
-3. Open ``cmd.exe`` and run::
-
-        pip install PyQt5
-        pip install SpectroScope
-
-You should then be able to run it with ``spectroscope`` (or ``python -m spectroscope``
-if it doesn't work for you).
--->
-
 Todo:
 -----
 
-- save FFT history (allow big waterfall plot saved to file)
+- save FFT history (allow big waterfall plot saved to file e.g. bitmap(png, etc) and raw floating-point data(hdf5, etc.))
 - automatic peak detection / highlighting
 - display average noise level
 - frequency markers / bookmarks with notes (even importing and exporting .csv file with
   predefined channels, etc.)
+- sellectable collormaps e.g. viridis, plasma, turbo
