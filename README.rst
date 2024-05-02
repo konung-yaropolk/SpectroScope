@@ -2,7 +2,10 @@ SpectroScope
 =================
 
 Spectrum analyzer for multiple SDR platforms (GUI for soapy_power,
-hackrf_sweep, rtl_power, rx_power and other backends), fork of unmaintained QSpectrumAnalyzer project.
+hackrf_sweep, rtl_power, rx_power and other backends), the fork and continuation
+of orphaned QSpectrumanalyzer project.
+
+
 
 Screenshots
 -----------
@@ -132,19 +135,16 @@ Ubuntu:
     # Install SoapySDR drivers for your hardware (e.g. RTL-SDR, Airspy, HackRF, LimeSDR, etc.)
     sudo apt-get install soapysdr-module-rtlsdr soapysdr-module-airspy soapysdr-module-hackrf soapysdr-module-lms7
 
-    # Install SpectroScope locally for your current user
-    pip3 install --user spectroscope
-
-``spectroscope`` and ``soapy_power`` executables will be then placed in
-``~/.local/bin`` directory, you can add it to your PATH in ``~/.bashrc``.
-
-If you want to install SpectroScope directly from Git master branch, you can use this procedure:
-::
-
     git clone https://github.com/konung-yaropolk/spectroscope.git
     cd spectroscope
     pip3 install --user .
 
+``spectroscope`` and ``soapy_power`` executables will be then placed in
+``~/.local/bin`` directory, you can add it to your PATH in ``~/.bashrc``.
+
+
+
+<!---
 Windows:
 ********
 
@@ -161,6 +161,9 @@ libraries and drivers).*
    `releases <https://github.com/konung-yaropolk/spectroscope/releases>`_ page
 3. after you connect your SDR device, you have to run `Zadig <http://zadig.akeo.ie>`_ to install USB drivers
 
+
+
+
 You can also install SpectroScope manually from `PyPI <https://pypi.python.org>`_:
 
 1. install Python 3.6.x (64-bit) from `python.org <https://www.python.org>`_ and add Python to PATH
@@ -173,6 +176,7 @@ You can also install SpectroScope manually from `PyPI <https://pypi.python.org>`
 
 You should then be able to run it with ``spectroscope`` (or ``python -m spectroscope``
 if it doesn't work for you).
+-->
 
 Todo:
 -----
