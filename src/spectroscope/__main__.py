@@ -5,7 +5,6 @@ import sys, os, signal, time, argparse
 from qtpy import QtCore, QtGui, QtWidgets
 
 from spectroscope import backends
-from spectroscope.version import __version__
 from spectroscope.data import DataStorage
 from spectroscope.plot import SpectrumPlotWidget, WaterfallPlotWidget
 from spectroscope.utils import str_to_color, human_time
