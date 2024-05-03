@@ -1,6 +1,6 @@
 from qtpy import QtCore, QtWidgets
 
-from spectroscope.ui_spectroscope_smoothing import Ui_SpectroScopeSmoothing
+from spectroscope.ui.ui_spectroscope_smoothing import Ui_SpectroScopeSmoothing
 
 
 class SpectroScopeSmoothing(QtWidgets.QDialog, Ui_SpectroScopeSmoothing):

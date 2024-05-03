@@ -1,7 +1,7 @@
 from qtpy import QtCore, QtWidgets
 
 from spectroscope.utils import color_to_str, str_to_color
-from spectroscope.ui_spectroscope_colors import Ui_SpectroScopeColors
+from spectroscope.ui.ui_spectroscope_colors import Ui_SpectroScopeColors
 
 
 class SpectroScopeColors(QtWidgets.QDialog, Ui_SpectroScopeColors):
