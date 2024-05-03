@@ -66,7 +66,7 @@ setup(
         'build_qt': {
             'packages': ['spectroscope'],
             'languages': ['cs'],
-            'replacement_bindings': 'Qt',
+            'replacement_bindings': 'QtPy',
         },
         'build_exe': {
             'datas': [
