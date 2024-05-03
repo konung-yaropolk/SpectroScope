@@ -9,5 +9,5 @@ pyuic6 ../src/spectroscope/ui/spectroscope_settings.ui -o ../src/spectroscope/ui
 pyuic6 ../src/spectroscope/ui/spectroscope_smoothing.ui -o ../src/spectroscope/ui/ui_spectroscope_smoothing.py
 
 echo "Done!"
-echo "Do anykey to exit..."
-read
+# echo "Do anykey to exit..."
+# read
