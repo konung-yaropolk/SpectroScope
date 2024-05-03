@@ -2,8 +2,8 @@ SpectroScope
 =================
 
 Spectrum analyzer for multiple SDR platforms (GUI for soapy_power,
-hackrf_sweep, rtl_power, rx_power and other backends), the fork and continuation
-of orphaned QSpectrumanalyzer project.
+hackrf_sweep, rtl_power, rx_power and other backends). SpectroScope is a fork
+and continuation of the orphaned QSpectrumanalyzer project.
 
 
 
