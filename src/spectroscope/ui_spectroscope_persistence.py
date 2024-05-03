@@ -1,4 +1,4 @@
-# Form implementation generated from reading ui file '../spectroscope/spectroscope_persistence.ui'
+# Form implementation generated from reading ui file '..\src\spectroscope\spectroscope_persistence.ui'
 #
 # Created by: PyQt6 UI code generator 6.7.0
 #

@@ -1,4 +1,4 @@
-# Form implementation generated from reading ui file '../spectroscope/spectroscope.ui'
+# Form implementation generated from reading ui file '..\src\spectroscope\spectroscope.ui'
 #
 # Created by: PyQt6 UI code generator 6.7.0
 #
@@ -187,7 +187,7 @@ class Ui_SpectroScopeMainWindow(object):
         palette.setBrush(QtGui.QPalette.ColorGroup.Disabled, QtGui.QPalette.ColorRole.PlaceholderText, brush)
         SpectroScopeMainWindow.setPalette(palette)
         icon = QtGui.QIcon()
-        icon.addPixmap(QtGui.QPixmap("../spectroscope\\spectroscope.svg"), QtGui.QIcon.Mode.Normal, QtGui.QIcon.State.Off)
+        icon.addPixmap(QtGui.QPixmap("..\\src\\spectroscope\\spectroscope.svg"), QtGui.QIcon.Mode.Normal, QtGui.QIcon.State.Off)
         SpectroScopeMainWindow.setWindowIcon(icon)
         SpectroScopeMainWindow.setTabShape(QtWidgets.QTabWidget.TabShape.Rounded)
         SpectroScopeMainWindow.setDockOptions(QtWidgets.QMainWindow.AnimatedDocks)
