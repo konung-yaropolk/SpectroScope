@@ -1,5 +1,5 @@
 pkgname=spectroscope
-pkgver=0.2.1
+pkgver=0.2.2
 pkgrel=1
 pkgdesc="Spectrum analyzer for multiple SDR platforms (PyQtGraph based GUI for soapy_power, hackrf_sweep, rtl_power, rx_power and other backends)"
 arch=('any')
