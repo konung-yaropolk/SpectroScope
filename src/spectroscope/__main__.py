@@ -3,7 +3,6 @@
 import sys, os, signal, time, argparse
 
 from qtpy import QtCore, QtGui, QtWidgets
-
 from spectroscope import backends
 from spectroscope.data import DataStorage
 from spectroscope.plot import SpectrumPlotWidget, WaterfallPlotWidget
@@ -13,6 +12,7 @@ from spectroscope.smoothing import SpectroScopeSmoothing
 from spectroscope.persistence import SpectroScopePersistence
 from spectroscope.colors import SpectroScopeColors
 from spectroscope.baseline import SpectroScopeBaseline
+from spectroscope.version import __version__
 from spectroscope.ui_spectroscope import Ui_SpectroScopeMainWindow
 
 debug = False
