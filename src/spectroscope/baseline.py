@@ -1,6 +1,6 @@
 from qtpy import QtCore, QtWidgets
 
-from spectroscope.ui_spectroscope_baseline import Ui_SpectroScopeBaseline
+from spectroscope.ui.ui_spectroscope_baseline import Ui_SpectroScopeBaseline
 
 
 class SpectroScopeBaseline(QtWidgets.QDialog, Ui_SpectroScopeBaseline):

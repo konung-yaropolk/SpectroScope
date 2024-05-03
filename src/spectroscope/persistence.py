@@ -1,6 +1,6 @@
 from qtpy import QtCore, QtWidgets
 
-from spectroscope.ui_spectroscope_persistence import Ui_SpectroScopePersistence
+from spectroscope.ui.ui_spectroscope_persistence import Ui_SpectroScopePersistence
 
 
 class SpectroScopePersistence(QtWidgets.QDialog, Ui_SpectroScopePersistence):

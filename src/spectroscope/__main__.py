@@ -13,7 +13,7 @@ from spectroscope.persistence import SpectroScopePersistence
 from spectroscope.colors import SpectroScopeColors
 from spectroscope.baseline import SpectroScopeBaseline
 from spectroscope.version import __version__
-from spectroscope.ui_spectroscope import Ui_SpectroScopeMainWindow
+from spectroscope.ui.ui_spectroscope import Ui_SpectroScopeMainWindow
 
 debug = False
 
@@ -31,7 +31,7 @@ class SpectroScopeMainWindow(QtWidgets.QMainWindow, Ui_SpectroScopeMainWindow):
         self.setupUi(self)
 
         # Set window icon
-        icon_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "spectroscope.svg")
+        icon_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "ui/spectroscope.svg")
         self.setWindowIcon(QtGui.QIcon(icon_path))
 
         # Create progress bar

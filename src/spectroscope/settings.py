@@ -2,8 +2,8 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 from spectroscope import backends
 
-from spectroscope.ui_spectroscope_settings import Ui_SpectroScopeSettings
-from spectroscope.ui_spectroscope_settings_help import Ui_SpectroScopeSettingsHelp
+from spectroscope.ui.ui_spectroscope_settings import Ui_SpectroScopeSettings
+from spectroscope.ui.ui_spectroscope_settings_help import Ui_SpectroScopeSettingsHelp
 
 
 class SpectroScopeSettings(QtWidgets.QDialog, Ui_SpectroScopeSettings):
