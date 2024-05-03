@@ -2,6 +2,9 @@
 
 from setuptools import setup
 
+
+exec(open('src/spectroscope/version.py').read())
+
 setup_cmdclass = {}
 
 # Allow compilation of Qt .qrc, .ui and .ts files (build_qt command)
@@ -27,5 +30,6 @@ except ImportError:
 
 
 setup(
+    version = __version__,
     # cmdclass = setup_cmdclass,
 )
