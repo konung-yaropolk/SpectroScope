@@ -1,4 +1,4 @@
 qtpy
 pyqt6
-pyqtgraph
-soapy-power
+pyqtgraph>=0.10.0
+soapy_power>=1.6.0

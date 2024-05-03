@@ -58,9 +58,11 @@ setup(
         ("share/pixmaps", ["spectroscope.png"]),
     ],
     install_requires=[
+        "qtpy",
+        "pyqt6",
         "soapy_power>=1.6.0",
         "pyqtgraph>=0.10.0",
-        "qtpy",
+
     ],
     options={
         'build_qt': {
