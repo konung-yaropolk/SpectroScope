@@ -175,15 +175,6 @@
        </color>
       </brush>
      </colorrole>
-     <colorrole role="PlaceholderText">
-      <brush brushstyle="SolidPattern">
-       <color alpha="128">
-        <red>35</red>
-        <green>38</green>
-        <blue>41</blue>
-       </color>
-      </brush>
-     </colorrole>
     </active>
     <inactive>
      <colorrole role="WindowText">
@@ -345,15 +336,6 @@
         <red>220</red>
         <green>217</green>
         <blue>214</blue>
-       </color>
-      </brush>
-     </colorrole>
-     <colorrole role="PlaceholderText">
-      <brush brushstyle="SolidPattern">
-       <color alpha="128">
-        <red>35</red>
-        <green>38</green>
-        <blue>41</blue>
        </color>
       </brush>
      </colorrole>
@@ -521,17 +503,13 @@
        </color>
       </brush>
      </colorrole>
-     <colorrole role="PlaceholderText">
-      <brush brushstyle="SolidPattern">
-       <color alpha="128">
-        <red>35</red>
-        <green>38</green>
-        <blue>41</blue>
-       </color>
-      </brush>
-     </colorrole>
     </disabled>
    </palette>
+  </property>
+  <property name="font">
+   <font>
+    <family>Roboto</family>
+   </font>
   </property>
   <property name="windowTitle">
    <string>SpectroScope</string>
@@ -606,7 +584,7 @@
      <x>0</x>
      <y>0</y>
      <width>1200</width>
-     <height>30</height>
+     <height>20</height>
     </rect>
    </property>
    <widget class="QMenu" name="menu_File">
@@ -955,13 +933,13 @@
      <item row="1" column="0">
       <widget class="QDoubleSpinBox" name="intervalSpinBox">
        <property name="minimum">
-        <double>0.0</double>
+        <double>0.000000000000000</double>
        </property>
        <property name="singleStep">
-        <double>0.1</double>
+        <double>0.100000000000000</double>
        </property>
        <property name="value">
-        <double>0.1000000000000000</double>
+        <double>0.100000000000000</double>
        </property>
       </widget>
      </item>
