@@ -13,6 +13,9 @@ class Ui_SpectroScopeColors(object):
     def setupUi(self, SpectroScopeColors):
         SpectroScopeColors.setObjectName("SpectroScopeColors")
         SpectroScopeColors.resize(253, 266)
+        font = QtGui.QFont()
+        font.setFamily("Roboto")
+        SpectroScopeColors.setFont(font)
         self.verticalLayout = QtWidgets.QVBoxLayout(SpectroScopeColors)
         self.verticalLayout.setObjectName("verticalLayout")
         self.formLayout = QtWidgets.QFormLayout()

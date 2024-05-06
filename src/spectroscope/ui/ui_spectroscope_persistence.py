@@ -13,6 +13,9 @@ class Ui_SpectroScopePersistence(object):
     def setupUi(self, SpectroScopePersistence):
         SpectroScopePersistence.setObjectName("SpectroScopePersistence")
         SpectroScopePersistence.resize(250, 130)
+        font = QtGui.QFont()
+        font.setFamily("Roboto")
+        SpectroScopePersistence.setFont(font)
         self.verticalLayout = QtWidgets.QVBoxLayout(SpectroScopePersistence)
         self.verticalLayout.setObjectName("verticalLayout")
         self.formLayout = QtWidgets.QFormLayout()

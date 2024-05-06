@@ -13,6 +13,9 @@ class Ui_SpectroScopeBaseline(object):
     def setupUi(self, SpectroScopeBaseline):
         SpectroScopeBaseline.setObjectName("SpectroScopeBaseline")
         SpectroScopeBaseline.resize(500, 100)
+        font = QtGui.QFont()
+        font.setFamily("Roboto")
+        SpectroScopeBaseline.setFont(font)
         self.verticalLayout = QtWidgets.QVBoxLayout(SpectroScopeBaseline)
         self.verticalLayout.setObjectName("verticalLayout")
         self.formLayout = QtWidgets.QFormLayout()

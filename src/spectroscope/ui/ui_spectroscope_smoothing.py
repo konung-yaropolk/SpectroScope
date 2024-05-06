@@ -13,6 +13,9 @@ class Ui_SpectroScopeSmoothing(object):
     def setupUi(self, SpectroScopeSmoothing):
         SpectroScopeSmoothing.setObjectName("SpectroScopeSmoothing")
         SpectroScopeSmoothing.resize(250, 130)
+        font = QtGui.QFont()
+        font.setFamily("Roboto")
+        SpectroScopeSmoothing.setFont(font)
         self.verticalLayout = QtWidgets.QVBoxLayout(SpectroScopeSmoothing)
         self.verticalLayout.setObjectName("verticalLayout")
         self.formLayout = QtWidgets.QFormLayout()

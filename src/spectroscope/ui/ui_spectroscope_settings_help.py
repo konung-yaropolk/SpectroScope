@@ -13,6 +13,9 @@ class Ui_SpectroScopeSettingsHelp(object):
     def setupUi(self, SpectroScopeSettingsHelp):
         SpectroScopeSettingsHelp.setObjectName("SpectroScopeSettingsHelp")
         SpectroScopeSettingsHelp.resize(1200, 700)
+        font = QtGui.QFont()
+        font.setFamily("Roboto")
+        SpectroScopeSettingsHelp.setFont(font)
         self.verticalLayout = QtWidgets.QVBoxLayout(SpectroScopeSettingsHelp)
         self.verticalLayout.setObjectName("verticalLayout")
         self.helpTextEdit = QtWidgets.QPlainTextEdit(parent=SpectroScopeSettingsHelp)

@@ -12,7 +12,10 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 class Ui_SpectroScopeSettings(object):
     def setupUi(self, SpectroScopeSettings):
         SpectroScopeSettings.setObjectName("SpectroScopeSettings")
-        SpectroScopeSettings.resize(600, 388)
+        SpectroScopeSettings.resize(364, 282)
+        font = QtGui.QFont()
+        font.setFamily("Roboto")
+        SpectroScopeSettings.setFont(font)
         self.verticalLayout = QtWidgets.QVBoxLayout(SpectroScopeSettings)
         self.verticalLayout.setObjectName("verticalLayout")
         self.formLayout = QtWidgets.QFormLayout()

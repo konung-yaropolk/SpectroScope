@@ -584,7 +584,7 @@
      <x>0</x>
      <y>0</y>
      <width>1200</width>
-     <height>20</height>
+     <height>21</height>
     </rect>
    </property>
    <widget class="QMenu" name="menu_File">
@@ -777,7 +777,7 @@
         <double>0.000000000000000</double>
        </property>
        <property name="maximum">
-        <double>2200.000000000000000</double>
+        <double>6000.000000000000000</double>
        </property>
        <property name="value">
         <double>87.000000000000000</double>
@@ -818,7 +818,7 @@
         <double>0.000000000000000</double>
        </property>
        <property name="maximum">
-        <double>2200.000000000000000</double>
+        <double>6000.000000000000000</double>
        </property>
        <property name="value">
         <double>108.000000000000000</double>
