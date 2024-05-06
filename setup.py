@@ -2,7 +2,7 @@
 
 from setuptools import setup
 
-
+# read version info from project code
 exec(open('src/spectroscope/version.py').read())
 
 setup_cmdclass = {}
