@@ -18,8 +18,8 @@ Requirements
 ------------
 
 - Python >= 3.3
-- PyQt4 / PyQt5 / PySide / PySide2
-- Qt.py (https://github.com/mottosso/Qt.py)
+- PyQt4 / PyQt5 / PyQt6 / PySide / PySide2
+- QtPy (https://github.com/spyder-ide/qtpy)
 - PyQtGraph (http://www.pyqtgraph.org)
 - soapy_power (https://github.com/xmikos/soapy_power)
 - Optional: hackrf / rtl-sdr / rtl_power_fftw / rx_tools
