@@ -18,7 +18,7 @@ Requirements
 ------------
 
 - Python >= 3.3
-- PyQt4 / PyQt5 / PyQt6 / PySide / PySide2
+- PyQt5 / PyQt6 / PySide2 / PySide6
 - QtPy (https://github.com/spyder-ide/qtpy)
 - PyQtGraph (http://www.pyqtgraph.org)
 - soapy_power (https://github.com/xmikos/soapy_power)
