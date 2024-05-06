@@ -1,7 +1,7 @@
 import struct, shlex, sys, time
 
 import numpy as np
-from qtpy import QtCore
+from PyQt6 import QtCore
 
 from spectroscope import subproc
 from spectroscope.backends import BaseInfo, BasePowerThread

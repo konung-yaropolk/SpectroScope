@@ -1,6 +1,6 @@
 import collections, math
 
-from qtpy import QtCore, QtGui
+from PyQt6 import QtCore, QtGui
 import pyqtgraph as pg
 
 # Basic PyQtGraph settings

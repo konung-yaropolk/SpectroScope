@@ -1,6 +1,6 @@
 import numpy as np
 
-from qtpy import QtGui
+from PyQt6 import QtGui
 
 
 def smooth(x, window_len=11, window='hanning'):

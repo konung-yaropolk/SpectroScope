@@ -18,8 +18,7 @@ Requirements
 ------------
 
 - Python >= 3.3
-- PyQt5 / PyQt6 / PySide2 / PySide6
-- QtPy (https://github.com/spyder-ide/qtpy)
+- PyQt6 (https://github.com/spyder-ide/PyQt6)
 - PyQtGraph (http://www.pyqtgraph.org)
 - soapy_power (https://github.com/xmikos/soapy_power)
 - Optional: hackrf / rtl-sdr / rtl_power_fftw / rx_tools
