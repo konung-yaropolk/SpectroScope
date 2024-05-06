@@ -436,7 +436,7 @@ class SpectroScopeMainWindow(QtWidgets.QMainWindow, Ui_SpectroScopeMainWindow):
     @QtCore.pyqtSlot()
     def on_baselineButton_clicked(self):
         dialog = SpectroScopeBaseline(self)
-        if dialog.exec_():
+        if dialog.exec():
             settings = QtCore.QSettings()
             self.data_storage.set_subtract_baseline(
                 bool(self.subtractBaselineCheckBox.isChecked()),
@@ -446,7 +446,7 @@ class SpectroScopeMainWindow(QtWidgets.QMainWindow, Ui_SpectroScopeMainWindow):
     @QtCore.pyqtSlot()
     def on_smoothButton_clicked(self):
         dialog = SpectroScopeSmoothing(self)
-        if dialog.exec_():
+        if dialog.exec():
             settings = QtCore.QSettings()
             self.data_storage.set_smooth(
                 bool(self.smoothCheckBox.isChecked()),
@@ -458,7 +458,7 @@ class SpectroScopeMainWindow(QtWidgets.QMainWindow, Ui_SpectroScopeMainWindow):
     def on_persistenceButton_clicked(self):
         prev_persistence_length = self.spectrumPlotWidget.persistence_length
         dialog = SpectroScopePersistence(self)
-        if dialog.exec_():
+        if dialog.exec():
             settings = QtCore.QSettings()
             persistence_length = settings.value("persistence_length", 5, int)
             self.spectrumPlotWidget.persistence_length = persistence_length
@@ -473,7 +473,7 @@ class SpectroScopeMainWindow(QtWidgets.QMainWindow, Ui_SpectroScopeMainWindow):
     @QtCore.pyqtSlot()
     def on_colorsButton_clicked(self):
         dialog = SpectroScopeColors(self)
-        if dialog.exec_():
+        if dialog.exec():
             settings = QtCore.QSettings()
             self.spectrumPlotWidget.main_color = str_to_color(settings.value("main_color", "255, 255, 0, 255"))
             self.spectrumPlotWidget.peak_hold_max_color = str_to_color(settings.value("peak_hold_max_color", "255, 0, 0, 255"))
@@ -486,7 +486,7 @@ class SpectroScopeMainWindow(QtWidgets.QMainWindow, Ui_SpectroScopeMainWindow):
     @QtCore.pyqtSlot()
     def on_action_Settings_triggered(self):
         dialog = SpectroScopeSettings(self)
-        if dialog.exec_():
+        if dialog.exec():
             self.setup_power_thread()
 
     @QtCore.pyqtSlot()
