@@ -1,3 +1,10 @@
-#SpectroScopeMainWindow {
+ #SpectroScopeMainWindow {
     background: rgb(22, 22, 22);
 }
+
+/*
+#plotSplitter {
+    background: rgb(22, 22, 22);
+    border-color: rgb(22, 22, 22);
+}
+*/
