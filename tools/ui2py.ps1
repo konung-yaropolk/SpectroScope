@@ -1,5 +1,4 @@
 #!/usr/bin/env pwsh
-Set-Location ..
 Set-Location src\spectroscope\ui
 
 Start-Process -FilePath "pyuic6" -ArgumentList "spectroscope.ui -o ui_spectroscope.py" -NoNewWindow -Wait
