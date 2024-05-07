@@ -199,10 +199,9 @@ class SpectroScopeMainWindow(QtWidgets.QMainWindow, Ui_SpectroScopeMainWindow):
         # Migration from older version of config file
         if settings.value("config_version", 1, int) < 2:
             # Make tabs from docks when started for first time
-            self.tabifyDockWidget(self.settingsDockWidget, self.levelsDockWidget)
-            self.settingsDockWidget.raise_()
+            self.tabifyDockWidget(self.controlsDockWidget, self.levelsDockWidget)
+            self.controlsDockWidget.raise_()
             self.set_dock_size(self.controlsDockWidget, 0, 0)
-            self.set_dock_size(self.frequencyDockWidget, 0, 0)
             # Update config version
             settings.setValue("config_version", 2)
 
