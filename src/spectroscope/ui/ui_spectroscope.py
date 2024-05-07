@@ -184,7 +184,6 @@ class Ui_SpectroScopeMainWindow(object):
         icon.addPixmap(QtGui.QPixmap("spectroscope.svg"), QtGui.QIcon.Mode.Normal, QtGui.QIcon.State.Off)
         SpectroScopeMainWindow.setWindowIcon(icon)
         SpectroScopeMainWindow.setTabShape(QtWidgets.QTabWidget.TabShape.Rounded)
-        SpectroScopeMainWindow.setDockOptions(QtWidgets.QMainWindow.DockOption.AnimatedDocks)
         self.centralwidget = QtWidgets.QWidget(parent=SpectroScopeMainWindow)
         sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
         sizePolicy.setHorizontalStretch(0)

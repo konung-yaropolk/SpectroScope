@@ -36,6 +36,11 @@ class SpectroScopeMainWindow(QtWidgets.QMainWindow, Ui_SpectroScopeMainWindow):
         super().__init__(parent)
         self.setupUi(self)
 
+        css_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "ui/default.css")
+        with open(css_path, "r") as css:            
+            stylesheet =css.read()
+        self.setStyleSheet(stylesheet)
+
         # Set window icon
         icon_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "ui/spectroscope.svg")
         self.setWindowIcon(QtGui.QIcon(icon_path))
