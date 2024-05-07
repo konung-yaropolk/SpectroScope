@@ -146,25 +146,25 @@ class SpectroScopeMainWindow(QtWidgets.QMainWindow, Ui_SpectroScopeMainWindow):
         self.power_thread.powerThreadStarted.connect(self.on_power_thread_started)
         self.power_thread.powerThreadStopped.connect(self.on_power_thread_stopped)
 
-    def set_dock_size(self, dock, width, height):
-        """Ugly hack for resizing QDockWidget (because it doesn't respect minimumSize / sizePolicy set in Designer)
-           Link: https://stackoverflow.com/questions/2722939/c-resize-a-docked-qt-qdockwidget-programmatically"""
-        old_min_size = dock.minimumSize()
-        old_max_size = dock.maximumSize()
+    # def set_dock_size(self, dock, width, height):
+    #     """Ugly hack for resizing QDockWidget (because it doesn't respect minimumSize / sizePolicy set in Designer)
+    #        Link: https://stackoverflow.com/questions/2722939/c-resize-a-docked-qt-qdockwidget-programmatically"""
+    #     old_min_size = dock.minimumSize()
+    #     old_max_size = dock.maximumSize()
 
-        if width >= 0:
-            if dock.width() < width:
-                dock.setMinimumWidth(width)
-            else:
-                dock.setMaximumWidth(width)
+    #     if width >= 0:
+    #         if dock.width() < width:
+    #             dock.setMinimumWidth(width)
+    #         else:
+    #             dock.setMaximumWidth(width)
 
-        if height >= 0:
-            if dock.height() < height:
-                dock.setMinimumHeight(height)
-            else:
-                dock.setMaximumHeight(height)
+    #     if height >= 0:
+    #         if dock.height() < height:
+    #             dock.setMinimumHeight(height)
+    #         else:
+    #             dock.setMaximumHeight(height)
 
-        QtCore.QTimer.singleShot(0, lambda: self.set_dock_size_callback(dock, old_min_size, old_max_size))
+    #     QtCore.QTimer.singleShot(0, lambda: self.set_dock_size_callback(dock, old_min_size, old_max_size))
 
     def set_dock_size_callback(self, dock, old_min_size, old_max_size):
         """Return to original QDockWidget minimumSize and maximumSize after running set_dock_size()"""
@@ -177,7 +177,7 @@ class SpectroScopeMainWindow(QtWidgets.QMainWindow, Ui_SpectroScopeMainWindow):
         self.startFreqSpinBox.setValue(settings.value("start_freq", 87.0, float))
         self.stopFreqSpinBox.setValue(settings.value("stop_freq", 108.0, float))
         self.binSizeSpinBox.setValue(settings.value("bin_size", 10.0, float))
-        self.intervalSpinBox.setValue(settings.value("interval", 10, int))
+        self.intervalSpinBox.setValue(settings.value("interval", 1, float))
         self.gainSpinBox.setValue(settings.value("gain", 0, float))
         self.ppmSpinBox.setValue(settings.value("ppm", 0, int))
         self.cropSpinBox.setValue(settings.value("crop", 0, int))
@@ -197,13 +197,15 @@ class SpectroScopeMainWindow(QtWidgets.QMainWindow, Ui_SpectroScopeMainWindow):
             self.plotSplitter.restoreState(settings.value("plotsplitter_state"))
 
         # Migration from older version of config file
-        if settings.value("config_version", 1, int) < 2:
-            # Make tabs from docks when started for first time
-            self.tabifyDockWidget(self.controlsDockWidget, self.levelsDockWidget)
-            self.controlsDockWidget.raise_()
-            self.set_dock_size(self.controlsDockWidget, 0, 0)
-            # Update config version
-            settings.setValue("config_version", 2)
+        # if settings.value("config_version", 1, int) < 2:
+        #     # Make tabs from docks when started for first time
+        #     self.tabifyDockWidget(self.controlsDockWidget, self.levelsDockWidget)
+        #     self.controlsDockWidget.raise_()
+        #     # to delete if works ok without
+        #     # self.set_dock_size(self.controlsDockWidget, 0, 0)
+
+        #     # Update config version
+        #     settings.setValue("config_version", 2)
 
         # Window geometry has to be restored only after show(), because initial
         # maximization doesn't work otherwise (at least not in some window managers on X11)
