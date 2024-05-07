@@ -1,6 +1,10 @@
 #!/usr/bin/env python
 
-import sys, os, signal, time, argparse
+import sys
+import os
+import signal
+import time
+import argparse
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 from spectroscope import backends
@@ -16,6 +20,8 @@ from spectroscope.version import __version__
 from spectroscope.ui.ui_spectroscope import Ui_SpectroScopeMainWindow
 
 debug = False
+
+
 
 # Allow CTRL+C and/or SIGTERM to kill us (PyQt blocks it otherwise)
 signal.signal(signal.SIGINT, signal.SIG_DFL)
