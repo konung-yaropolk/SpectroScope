@@ -522,7 +522,7 @@
    <enum>QTabWidget::Rounded</enum>
   </property>
   <property name="dockOptions">
-   <set>QMainWindow::AnimatedDocks</set>
+   <set>QMainWindow::DockOption::AnimatedDocks</set>
   </property>
   <widget class="QWidget" name="centralwidget">
    <property name="sizePolicy">

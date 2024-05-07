@@ -1,4 +1,4 @@
-from qtpy import QtCore, QtWidgets
+from PyQt6 import QtCore, QtWidgets
 
 from spectroscope.ui.ui_spectroscope_baseline import Ui_SpectroScopeBaseline
 
@@ -14,7 +14,7 @@ class SpectroScopeBaseline(QtWidgets.QDialog, Ui_SpectroScopeBaseline):
         settings = QtCore.QSettings()
         self.baselineFileEdit.setText(settings.value("baseline_file", ""))
 
-    @QtCore.Slot()
+    @QtCore.pyqtSlot()
     def on_baselineFileButton_clicked(self):
         """Open file dialog when button is clicked"""
         filename = QtWidgets.QFileDialog.getOpenFileName(self, self.tr("Select baseline file - SpectroScope"))[0]

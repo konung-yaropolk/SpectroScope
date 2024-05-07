@@ -1,4 +1,4 @@
-from qtpy import QtCore, QtWidgets
+from PyQt6 import QtCore, QtWidgets
 
 from spectroscope.ui.ui_spectroscope_persistence import Ui_SpectroScopePersistence
 

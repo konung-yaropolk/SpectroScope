@@ -1,4 +1,4 @@
-from qtpy import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 from spectroscope import backends
 
@@ -51,14 +51,14 @@ class SpectroScopeSettings(QtWidgets.QDialog, Ui_SpectroScopeSettings):
             self.backendComboBox.setCurrentIndex(i)
         self.backendComboBox.blockSignals(False)
 
-    @QtCore.Slot()
+    @QtCore.pyqtSlot()
     def on_executableButton_clicked(self):
         """Open file dialog when button is clicked"""
         filename = QtWidgets.QFileDialog.getOpenFileName(self, self.tr("Select executable - SpectroScope"))[0]
         if filename:
             self.executableEdit.setText(filename)
 
-    @QtCore.Slot()
+    @QtCore.pyqtSlot()
     def on_paramsHelpButton_clicked(self):
         """Open additional parameters help dialog when button is clicked"""
         try:
@@ -75,7 +75,7 @@ class SpectroScopeSettings(QtWidgets.QDialog, Ui_SpectroScopeSettings):
         self.params_help_dialog.raise_()
         self.params_help_dialog.activateWindow()
 
-    @QtCore.Slot()
+    @QtCore.pyqtSlot()
     def on_deviceHelpButton_clicked(self):
         """Open device help dialog when button is clicked"""
         try:
@@ -92,7 +92,7 @@ class SpectroScopeSettings(QtWidgets.QDialog, Ui_SpectroScopeSettings):
         self.device_help_dialog.raise_()
         self.device_help_dialog.activateWindow()
 
-    @QtCore.Slot(str)
+    @QtCore.pyqtSlot(str)
     def on_backendComboBox_currentIndexChanged(self, text):
         """Change executable when backend is changed"""
         self.executableEdit.setText(text)
