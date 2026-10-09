@@ -245,10 +245,22 @@ pub fn average_frames(frames: &[Frame]) -> Option<(Arc<Vec<f64>>, Vec<f32>)> {
     ))
 }
 
-/// Encoder for this module's tests and for the `soapy_power` backend's.
+/// Append one record to `w`.
 ///
-/// `header.size` is written verbatim so a test can craft a mismatch.
-#[cfg(test)]
+/// Records are self-delimiting -- magic, fixed header, then exactly
+/// `header.size` bytes -- which is what makes this format safe to record into:
+/// a file cut short mid-sweep still reads back cleanly up to its last complete
+/// record, and [`read_record`] reports the remainder as [`BinError::Truncated`]
+/// rather than returning garbage.
+pub fn write_record<W: std::io::Write>(
+    w: &mut W,
+    header: &Header,
+    y: &[f32],
+) -> std::io::Result<()> {
+    w.write_all(&encode_record(header, y))
+}
+
+/// `header.size` is written verbatim, so a test can craft a mismatch.
 pub(crate) fn encode_record(header: &Header, y: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(RECORD_HEADER_LEN + y.len() * 4);
     out.extend_from_slice(MAGIC);
@@ -269,6 +281,26 @@ pub(crate) fn encode_record(header: &Header, y: &[f32]) -> Vec<u8> {
         out.extend_from_slice(&v.to_le_bytes());
     }
     out
+}
+
+/// Header describing one complete sweep, for recording.
+pub fn sweep_header(start: f64, stop: f64, bins: usize, time_start: f64, time_stop: f64) -> Header {
+    Header {
+        version: SUPPORTED_VERSION,
+        time_start,
+        time_stop,
+        start,
+        stop,
+        // The reader reconstructs the axis from `step`, so it has to be the
+        // spacing that `bins` points across `start..stop` really have.
+        step: if bins > 1 {
+            (stop - start) / bins as f64
+        } else {
+            0.0
+        },
+        samples: 0,
+        size: (bins * std::mem::size_of::<f32>()) as u64,
+    }
 }
 
 /// A plausible header for `bins` values spanning `start..stop`.

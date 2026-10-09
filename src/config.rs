@@ -214,6 +214,13 @@ pub struct Config {
 
     pub baseline_file: String,
 
+    // --- recording ---------------------------------------------------------
+    /// Where the next recording is written.
+    pub record_file: String,
+    pub record_format: crate::data::RecordFormat,
+    /// Where the last waterfall image was saved, to seed the next save dialog.
+    pub waterfall_image_file: String,
+
     // --- layout -----------------------------------------------------------
     /// Share of the plot area given to the spectrum (the rest is waterfall).
     pub plot_split: f32,
@@ -239,7 +246,7 @@ impl Default for Config {
             sample_rate: 2_560_000.0,
             bandwidth: 0.0,
             lnb_lo: 0.0,
-            waterfall_history_size: 4096,
+            waterfall_history_size: 8192,
 
             start_freq: 87.0,
             stop_freq: 108.0,
@@ -260,6 +267,10 @@ impl Default for Config {
             persistence_decay: DecayFn::Exponential,
 
             baseline_file: String::new(),
+
+            record_file: String::new(),
+            record_format: crate::data::RecordFormat::default(),
+            waterfall_image_file: String::new(),
 
             plot_split: 0.5,
             show_waterfall: true,

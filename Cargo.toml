@@ -62,9 +62,16 @@ env_logger = { version = "0.11", default-features = false, features = [
 ] }
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 
-# Just the PNG decoder, for the window/taskbar icon. eframe already pulls
-#  in, so enabling one more feature of it costs nothing extra.
+# Just the PNG decoder: for the window icon, and for the colour-mapped
+# waterfall export. eframe already pulls `image` in, so enabling one of its
+# features costs nothing extra. TIFF is handled by fast-tiff-lib below, which
+# can write the raw float data ImageJ wants.
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+# ImageJ-compatible TIFF writing. `default-features = false` drops the memory
+# map (we only write) and the ZSTD codec, whose C dependency is not worth
+# pulling in for a Deflate-compressed file.
+fast-tiff-lib = { version = "0.21", default-features = false }
 
 # The native graphics backends. Cargo unifies features across the graph, so
 # naming wgpu here is what gives eframe's own copy its backends. Each of these

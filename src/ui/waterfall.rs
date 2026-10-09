@@ -28,7 +28,13 @@ const ALIGN_TEXELS: usize = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize / 4;
 const TICK_LEN: f32 = 5.0;
 
 /// Vertical stretch limits, in screen points per history row.
-const MIN_POINTS_PER_ROW: f64 = 0.05;
+///
+/// The lower bound is what decides how much time fits on screen at once: at
+/// 0.01 a 400-point pane spans 40000 sweeps, which is over ten minutes even at
+/// the fastest sweep rates these backends reach, and the whole of a default
+/// history at a sweep a second. The real ceiling past that is how much history
+/// is kept, not the zoom.
+const MIN_POINTS_PER_ROW: f64 = 0.01;
 const MAX_POINTS_PER_ROW: f64 = 64.0;
 
 /// Points per row on a fresh view, before any history exists to fit to.

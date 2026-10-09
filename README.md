@@ -52,6 +52,7 @@ pixel, so a feature lines up vertically between them.
 
 | Gesture | Effect |
 |---|---|
+| *Start* / *Stop* | one button, labelled for what it will do |
 | drag on the spectrum | pan both views |
 | scroll on the waterfall | move back and forth through history |
 | **shift** + scroll on the waterfall | stretch time vertically |
@@ -69,11 +70,47 @@ scrolling hands the scale to you, and *Reset view* hands it back.
 Scrolled away from the newest sweep, the waterfall shows a `history -N s` badge
 so a paused-looking display is never mistaken for a stalled one.
 
-The waterfall keeps 4096 sweeps by default -- over an hour at one sweep a
-second -- and *Settings* raises that to 16384. The history is also capped by
-memory, since the cost is `bins x sweeps x 4` bytes and a very wide sweep would
-otherwise ask for gigabytes; the row count is reduced to fit and the reduction
-is logged.
+The waterfall keeps 8192 sweeps by default -- over two hours at one sweep a
+second -- and *Settings* raises that to 16384, which is the largest texture
+common GPUs allow. Zoomed fully out a pane shows tens of thousands of sweeps at
+once, so what bounds the visible span is how much history is kept rather than
+the zoom. The history is also capped by memory, since the cost is
+`bins x sweeps x 4` bytes and a very wide sweep would otherwise ask for
+gigabytes; the row count is reduced to fit and the reduction is logged.
+
+## Recording and export
+
+The *Recording* panel writes sweeps as they arrive and saves the waterfall as an
+image. Both need a filesystem, so they are desktop-only.
+
+Recording is **append-only and flushed per sweep**, because the case worth
+designing for is the capture that gets interrupted. Neither format has a
+trailer or an index written at the end, so a file that simply stops — power
+cut, closed lid, killed process — is still a valid file holding every sweep
+before that point, and at most the sweep in flight is lost.
+
+| Format | Why |
+|---|---|
+| `soapy_power` binary (`.bin`) — **default** | Same container `soapy_power -F soapy_power_bin` produces, so a recording loads straight back as a *Baseline*. Full `f32` precision, about six times smaller than text, and its records are magic-delimited so a truncated tail is detected rather than misparsed. |
+| CSV (`.csv`) | `rtl_power` column order, for reading in other tools. Line-based, so a partial final line is equally harmless. |
+
+*Save waterfall...* writes the stored history at native resolution, one pixel
+per bin per sweep, not a screenshot of the pane. The extension picks between
+two deliberately different things:
+
+- **PNG** is a picture: the colour map baked into 8-bit RGB, for a report or a
+  bug thread.
+- **TIFF** is the measurement. Pixels are the raw `f32` dB values, written
+  through [`fast-tiff-lib`](https://crates.io/crates/fast-tiff-lib) as an
+  ImageJ-compatible 32-bit float image. The colour map travels beside the data
+  as an ImageJ LUT, along with the display window, so ImageJ opens it looking
+  exactly like the screen while *Analyze → Measure* and every plugin still read
+  dBm. Baking the colours in would quantise 32-bit data to 8 bits per channel
+  and make the file unmeasurable. Axis parameters — start frequency, bin width,
+  sweep interval — ride along in the ImageJ description.
+
+Both are lossless, which matters when the image is evidence: JPEG ringing
+around a carrier is indistinguishable from a spur.
 
 ## Performance notes
 

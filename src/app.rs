@@ -11,7 +11,7 @@ use std::collections::VecDeque;
 use crossbeam_channel::{Receiver, TryRecvError};
 
 use crate::config::Config;
-use crate::data::{Baseline, DataStorage, Updated};
+use crate::data::{Baseline, DataStorage, Recorder, Updated};
 use crate::sources::{EventSink, Frame, SourceEvent, SourceSession, SpectrumSource, SweepConfig};
 use crate::ui::{Dialogs, LevelsPanel, SpectrumPlot, Waterfall, WaterfallView};
 use crate::util::{human_time, now_monotonic};
@@ -47,6 +47,9 @@ pub struct SpectroScopeApp {
 
     log: VecDeque<String>,
     error: Option<String>,
+
+    /// Open recording, if any. Sweeps are appended as they arrive.
+    recorder: Option<Recorder>,
 
     /// Monotonic seconds, for the status bar and the progress bar.
     run_started_at: f64,
@@ -92,6 +95,7 @@ impl SpectroScopeApp {
             wf_geometry: (0, 0),
             log: VecDeque::new(),
             error: None,
+            recorder: None,
             run_started_at: now,
             last_frame_at: now,
             sweep_time: 0.0,
@@ -155,6 +159,85 @@ impl SpectroScopeApp {
         }
         self.events = None;
         self.running = false;
+        // A recording outliving the acquisition that feeds it would just be an
+        // open file accruing nothing.
+        self.stop_recording();
+    }
+
+    /// Begin writing sweeps to the configured file.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start_recording(&mut self) {
+        self.stop_recording();
+
+        let path = self.cfg.record_file.trim().to_owned();
+        if path.is_empty() {
+            self.error = Some("Choose a file to record into first.".to_owned());
+            return;
+        }
+
+        match Recorder::create(&path, self.cfg.record_format) {
+            Ok(rec) => {
+                self.push_log(format!(
+                    "Recording to {path} as {}",
+                    self.cfg.record_format.label()
+                ));
+                self.recorder = Some(rec);
+            }
+            Err(e) => {
+                self.push_log(format!("Cannot record to {path}: {e}"));
+                self.error = Some(format!("Cannot record to {path}: {e}"));
+            }
+        }
+    }
+
+    fn stop_recording(&mut self) {
+        let Some(rec) = self.recorder.take() else {
+            return;
+        };
+        let (path, sweeps) = (rec.path().display().to_string(), rec.sweeps());
+        match rec.finish() {
+            Ok(()) => self.push_log(format!("Recorded {sweeps} sweeps to {path}")),
+            Err(e) => {
+                self.push_log(format!("Error closing {path}: {e}"));
+                self.error = Some(format!("Error closing {path}: {e}"));
+            }
+        }
+    }
+
+    /// Write the stored history out as an image.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn save_waterfall(&mut self, path: std::path::PathBuf) {
+        {
+            // The axes only mean anything alongside the pixels, so they
+            // travel with them into the TIFF metadata.
+            let axes = match self.storage.x() {
+                Some(x) if x.len() > 1 => crate::data::image_export::Axes {
+                    start_hz: x[0],
+                    bin_hz: (x[x.len() - 1] - x[0]) / (x.len() - 1) as f64,
+                    sweep_s: self.sweep_time,
+                },
+                _ => crate::data::image_export::Axes::default(),
+            };
+
+            let result = crate::data::image_export::save(
+                &path,
+                self.storage.history(),
+                self.cfg.levels.lut(),
+                self.cfg.levels.low,
+                self.cfg.levels.high,
+                axes,
+            );
+            match result {
+                Ok((w, h)) => {
+                    self.cfg.waterfall_image_file = path.display().to_string();
+                    self.push_log(format!("Saved waterfall {w}x{h} to {}", path.display()));
+                }
+                Err(e) => {
+                    self.push_log(format!("Could not save waterfall: {e}"));
+                    self.error = Some(format!("Could not save waterfall: {e}"));
+                }
+            }
+        }
     }
 
     /// Put both views back where a fresh run would have them.
@@ -226,6 +309,18 @@ impl SpectroScopeApp {
             self.first_frame_at = now;
         }
         self.sweep_time = average_sweep_time(now, self.first_frame_at, self.sweeps_seen);
+
+        if let Some(rec) = self.recorder.as_mut() {
+            if let Err(e) = rec.write(&frame) {
+                // A failed write means the capture is no longer being saved,
+                // which the user has to be told about rather than discover
+                // later from a short file.
+                let msg = format!("Recording stopped: {e}");
+                self.recorder = None;
+                self.push_log(msg.clone());
+                self.error = Some(msg);
+            }
+        }
 
         match self.storage.update(frame) {
             Ok(updated) => {
@@ -474,6 +569,8 @@ impl SpectroScopeApp {
                     ui.add_space(4.0);
                     self.settings_section(ui);
                     ui.add_space(4.0);
+                    self.recording_section(ui);
+                    ui.add_space(4.0);
                     self.levels_section(ui);
                 });
             });
@@ -483,27 +580,22 @@ impl SpectroScopeApp {
         egui::CollapsingHeader::new("Controls")
             .default_open(true)
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let w = (ui.available_width() - 8.0) / 2.0;
-                    if ui
-                        .add_enabled(
-                            !self.running,
-                            egui::Button::new("Start").min_size(egui::vec2(w, 26.0)),
-                        )
-                        .clicked()
-                    {
+                // One button that reports the state it will leave you in,
+                // rather than two of which one is always dead.
+                let label = if self.running { "Stop" } else { "Start" };
+                if ui
+                    .add(
+                        egui::Button::new(label)
+                            .min_size(egui::vec2(ui.available_width(), 28.0)),
+                    )
+                    .clicked()
+                {
+                    if self.running {
+                        self.stop();
+                    } else {
                         self.start(ctx, false);
                     }
-                    if ui
-                        .add_enabled(
-                            self.running,
-                            egui::Button::new("Stop").min_size(egui::vec2(w, 26.0)),
-                        )
-                        .clicked()
-                    {
-                        self.stop();
-                    }
-                });
+                }
                 if ui
                     .add_enabled(
                         !self.running,
@@ -736,6 +828,144 @@ impl SpectroScopeApp {
         }
     }
 
+    fn recording_section(&mut self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new("Recording")
+            .default_open(false)
+            .show(ui, |ui| {
+                // A browser has no path-addressable filesystem, so there is
+                // nothing to point a recorder at; saying so beats offering
+                // controls whose file picker can only ever return nothing.
+                #[cfg(target_arch = "wasm32")]
+                {
+                    ui.label(
+                        egui::RichText::new(
+                            "Recording and image export need a filesystem, so they are                              only available in the desktop build.",
+                        )
+                        .small()
+                        .weak(),
+                    );
+                    return;
+                }
+
+                #[cfg(not(target_arch = "wasm32"))]
+                self.recording_controls(ui);
+            });
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn recording_controls(&mut self, ui: &mut egui::Ui) {
+        let recording = self.recorder.is_some();
+
+        ui.horizontal(|ui| {
+            ui.label("File:");
+            ui.add_enabled(
+                !recording,
+                egui::TextEdit::singleline(&mut self.cfg.record_file)
+                    .desired_width(ui.available_width() - 32.0),
+            );
+            if ui
+                .add_enabled(!recording, egui::Button::new("..."))
+                .clicked()
+            {
+                let ext = self.cfg.record_format.extension();
+                if let Some(p) = save_file_dialog(
+                    "Record sweeps to",
+                    &self.cfg.record_file,
+                    &[("Sweep data", &[ext])],
+                    ext,
+                ) {
+                    self.cfg.record_file = p;
+                }
+            }
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("Format:");
+            egui::ComboBox::from_id_salt("record.format")
+                .selected_text(self.cfg.record_format.label())
+                .width(190.0)
+                .show_ui(ui, |ui| {
+                    for f in crate::data::RecordFormat::ALL {
+                        ui.add_enabled_ui(!recording, |ui| {
+                            ui.selectable_value(&mut self.cfg.record_format, f, f.label());
+                        });
+                    }
+                });
+        });
+
+        let label = if recording {
+            "Stop recording"
+        } else {
+            "Record"
+        };
+        if ui
+            .add(egui::Button::new(label).min_size(egui::vec2(ui.available_width(), 24.0)))
+            .on_hover_text(
+                "Sweeps are appended and flushed one at a time, so an interrupted \
+                         recording still opens",
+            )
+            .clicked()
+        {
+            if recording {
+                self.stop_recording();
+            } else {
+                self.start_recording();
+            }
+        }
+
+        match self.recorder.as_ref() {
+            Some(rec) => {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "● {} sweeps, {}",
+                        rec.sweeps(),
+                        human_bytes(rec.bytes())
+                    ))
+                    .small()
+                    .color(egui::Color32::from_rgb(230, 120, 120)),
+                );
+            }
+            None if !self.running => {
+                ui.label(
+                    egui::RichText::new("Recording follows the acquisition.")
+                        .small()
+                        .weak(),
+                );
+            }
+            None => {}
+        }
+
+        ui.separator();
+
+        let have_history = !self.storage.history().is_empty();
+        if ui
+            .add_enabled(
+                have_history,
+                egui::Button::new("Save waterfall...")
+                    .min_size(egui::vec2(ui.available_width(), 24.0)),
+            )
+            .on_hover_text("Write the stored history as a PNG or TIFF, one pixel per bin")
+            .clicked()
+        {
+            if let Some(p) = save_file_dialog(
+                "Save waterfall image",
+                &self.cfg.waterfall_image_file,
+                &[("PNG image", &["png"]), ("TIFF image", &["tif", "tiff"])],
+                "png",
+            ) {
+                self.save_waterfall(std::path::PathBuf::from(p));
+            }
+        }
+        if have_history {
+            let h = self.storage.history();
+            ui.label(
+                egui::RichText::new(format!("{} x {} px", h.bins(), h.len()))
+                    .small()
+                    .weak(),
+            );
+        }
+    }
+
     fn levels_section(&mut self, ui: &mut egui::Ui) {
         let mut outcome = None;
         egui::CollapsingHeader::new("Levels")
@@ -928,6 +1158,50 @@ impl eframe::App for SpectroScopeApp {
     }
 }
 
+/// `1.2 MB`, for the recording readout.
+#[cfg(not(target_arch = "wasm32"))]
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "kB", "MB", "GB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// Native save dialog.
+#[cfg(not(target_arch = "wasm32"))]
+fn save_file_dialog(
+    title: &str,
+    current: &str,
+    filters: &[(&str, &[&str])],
+    default_ext: &str,
+) -> Option<String> {
+    {
+        let mut dialog = rfd::FileDialog::new().set_title(title);
+        for (name, exts) in filters {
+            dialog = dialog.add_filter(*name, exts);
+        }
+
+        let current = std::path::Path::new(current.trim());
+        if let Some(dir) = current.parent().filter(|d| d.is_dir()) {
+            dialog = dialog.set_directory(dir);
+        }
+        match current.file_name().and_then(|n| n.to_str()) {
+            Some(name) => dialog = dialog.set_file_name(name),
+            None => dialog = dialog.set_file_name(format!("spectroscope.{default_ext}")),
+        }
+
+        dialog.save_file().map(|p| p.to_string_lossy().into_owned())
+    }
+}
+
 /// Seconds per sweep, averaged over the whole run.
 ///
 /// Deliberately not the gap between the last two sweeps, and not an
@@ -1032,6 +1306,17 @@ mod tests {
     fn sweep_time_rejects_a_nonsense_clock() {
         assert_eq!(average_sweep_time(100.0, 110.0, 5), 0.0);
         assert_eq!(average_sweep_time(f64::NAN, 100.0, 5), 0.0);
+    }
+
+    #[test]
+    fn human_bytes_picks_a_unit() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(512), "512 B");
+        assert_eq!(human_bytes(1024), "1.0 kB");
+        assert_eq!(human_bytes(1_572_864), "1.5 MB");
+        assert_eq!(human_bytes(3 * 1024 * 1024 * 1024), "3.0 GB");
+        // Never runs past the last unit.
+        assert!(human_bytes(u64::MAX).ends_with(" GB"));
     }
 
     #[test]
