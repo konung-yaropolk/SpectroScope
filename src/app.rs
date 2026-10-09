@@ -1,0 +1,938 @@
+//! The main window: menu bar, control panels, the spectrum/waterfall split and
+//! the acquisition lifecycle.
+//!
+//! Replaces `QSpectrumAnalyzerMainWindow` from `__main__.py`. Qt dock widgets
+//! have no egui equivalent, so the four docks (*Controls*, *Frequency*,
+//! *Settings*, *Levels*) became collapsible sections of one resizable side
+//! panel, which keeps the same grouping and the same reading order.
+
+use std::collections::VecDeque;
+
+use crossbeam_channel::{Receiver, TryRecvError};
+
+use crate::config::Config;
+use crate::data::{Baseline, DataStorage, Updated};
+use crate::sources::{EventSink, Frame, SourceEvent, SourceSession, SpectrumSource, SweepConfig};
+use crate::ui::{Dialogs, LevelsPanel, SpectrumPlot, Waterfall, WaterfallView};
+use crate::util::{human_time, now_monotonic};
+use crate::{APP_NAME, VERSION};
+
+/// Lines kept in the log pane. Enough to see a backend's startup complaints
+/// without letting a chatty backend grow unboundedly.
+const LOG_CAPACITY: usize = 500;
+
+/// Cap on frames drained per repaint. A backend that outruns the display must
+/// not be able to starve the GUI, but the queue still drains because every
+/// drained frame also requests another repaint.
+const MAX_FRAMES_PER_REPAINT: usize = 8;
+
+pub struct SpectroScopeApp {
+    cfg: Config,
+    storage: DataStorage,
+
+    spectrum: SpectrumPlot,
+    waterfall: Waterfall,
+    levels: LevelsPanel,
+    dialogs: Dialogs,
+    show_log: bool,
+
+    source: &'static dyn SpectrumSource,
+    session: Option<Box<dyn SourceSession>>,
+    events: Option<Receiver<SourceEvent>>,
+    running: bool,
+    hops: usize,
+
+    /// Geometry the waterfall textures were last built for.
+    wf_geometry: (usize, usize),
+
+    log: VecDeque<String>,
+    error: Option<String>,
+
+    /// Monotonic seconds, for the status bar and the progress bar.
+    run_started_at: f64,
+    last_frame_at: f64,
+    sweep_time: f64,
+}
+
+impl SpectroScopeApp {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let mut cfg = cc
+            .storage
+            .and_then(|s| eframe::get_value::<Config>(s, crate::config::STORAGE_KEY))
+            .unwrap_or_default();
+        cfg.clamp_to(&cfg.source().info().limits);
+
+        let mut waterfall = Waterfall::new(cc.wgpu_render_state.clone());
+        waterfall.set_colormap(cfg.levels.lut(), cfg.levels.reverse);
+
+        apply_theme(&cc.egui_ctx, cfg.dark_mode);
+
+        let source = cfg.source();
+        let now = now_monotonic();
+
+        Self {
+            storage: DataStorage::new(cfg.waterfall_history_size),
+            source,
+            cfg,
+            spectrum: SpectrumPlot::new(),
+            waterfall,
+            levels: LevelsPanel::new(),
+            dialogs: Dialogs::default(),
+            show_log: false,
+            session: None,
+            events: None,
+            running: false,
+            hops: 0,
+            wf_geometry: (0, 0),
+            log: VecDeque::new(),
+            error: None,
+            run_started_at: now,
+            last_frame_at: now,
+            sweep_time: 0.0,
+        }
+    }
+
+    // --- acquisition ------------------------------------------------------
+
+    fn start(&mut self, ctx: &egui::Context, single_shot: bool) {
+        self.stop();
+
+        self.source = self.cfg.source();
+        self.storage
+            .set_max_history_size(self.cfg.waterfall_history_size);
+        self.storage.reset();
+        self.spectrum.clear();
+        self.levels.invalidate();
+        self.wf_geometry = (0, 0);
+        self.error = None;
+
+        // Smoothing and the baseline have to be installed before the first
+        // sweep arrives, or the first frame would be processed with the old
+        // settings and the history would be inconsistent with the rest.
+        self.storage.set_smooth(
+            self.cfg.traces.smooth,
+            self.cfg.smooth_length,
+            self.cfg.smooth_window,
+        );
+        self.reload_baseline();
+
+        let now = now_monotonic();
+        self.run_started_at = now;
+        self.last_frame_at = now;
+        self.sweep_time = 0.0;
+
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let sink = EventSink::new(tx, Some(ctx.clone()));
+        let config: SweepConfig = self.cfg.sweep_config(single_shot);
+
+        match self.source.start(config, sink) {
+            Ok(session) => {
+                self.session = Some(session);
+                self.events = Some(rx);
+                self.running = true;
+            }
+            Err(e) => {
+                self.push_log(format!("Failed to start {}: {e}", self.source.info().id));
+                self.error = Some(e.to_string());
+                self.running = false;
+            }
+        }
+    }
+
+    fn stop(&mut self) {
+        if let Some(mut session) = self.session.take() {
+            session.stop();
+        }
+        self.events = None;
+        self.running = false;
+    }
+
+    fn push_log(&mut self, line: impl Into<String>) {
+        let line = line.into();
+        log::info!("{line}");
+        self.log.push_back(line);
+        while self.log.len() > LOG_CAPACITY {
+            self.log.pop_front();
+        }
+    }
+
+    /// Drain the source's events into the data store.
+    fn pump_events(&mut self) -> Updated {
+        let mut updated = Updated::default();
+        let mut frames = 0;
+
+        loop {
+            if frames >= MAX_FRAMES_PER_REPAINT {
+                break;
+            }
+            // The receiver is borrowed only long enough to take one event: the
+            // handlers below need `&mut self`, so the borrow cannot straddle
+            // them.
+            let Some(event) = self.events.as_ref().map(|rx| rx.try_recv()) else {
+                break;
+            };
+            match event {
+                Ok(SourceEvent::Started { hops }) => {
+                    self.hops = hops;
+                    self.running = true;
+                }
+                Ok(SourceEvent::Frame(frame)) => {
+                    frames += 1;
+                    updated = merge(updated, self.accept_frame(frame));
+                }
+                Ok(SourceEvent::Log(line)) => self.push_log(line),
+                Ok(SourceEvent::Error(line)) => {
+                    self.push_log(format!("Error: {line}"));
+                    self.error = Some(line);
+                }
+                Ok(SourceEvent::Stopped) => {
+                    self.running = false;
+                    // Keep the receiver: a source may emit queued frames just
+                    // before Stopped, and dropping it here would discard them.
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.running = false;
+                    self.events = None;
+                    break;
+                }
+            }
+        }
+
+        updated
+    }
+
+    fn accept_frame(&mut self, frame: Frame) -> Updated {
+        let now = now_monotonic();
+        self.sweep_time = now - self.last_frame_at;
+        self.last_frame_at = now;
+
+        match self.storage.update(frame) {
+            Ok(updated) => {
+                self.sync_waterfall(updated);
+                if self.cfg.traces.persistence {
+                    let y = self.storage.y().to_vec();
+                    self.spectrum
+                        .push_persistence(&y, self.cfg.persistence_length);
+                }
+                updated
+            }
+            Err(mismatch) => {
+                // The backend changed its bin count mid-run, which the derived
+                // series cannot absorb. Say so rather than silently dropping
+                // sweeps, which is what the Python build did.
+                self.push_log(mismatch.to_string());
+                Updated::default()
+            }
+        }
+    }
+
+    /// Keep the waterfall's textures in step with the history ring.
+    fn sync_waterfall(&mut self, updated: Updated) {
+        let history = self.storage.history();
+        let geometry = (history.bins(), history.capacity());
+        if geometry.0 == 0 {
+            return;
+        }
+
+        if geometry != self.wf_geometry {
+            self.waterfall.reset(geometry.0, geometry.1);
+            self.waterfall.upload_history(history);
+            self.wf_geometry = geometry;
+            return;
+        }
+
+        if updated.recalculated {
+            self.waterfall.upload_history(history);
+            return;
+        }
+
+        // The common path: exactly one new row, so exactly one row is uploaded.
+        if updated.history {
+            if let (Some(index), Some(row)) =
+                (history.row_index_from_newest(0), history.row_from_newest(0))
+            {
+                self.waterfall.push_row(index, row);
+            }
+        }
+    }
+
+    fn reload_baseline(&mut self) {
+        let baseline = self.load_baseline_file();
+        let updated = self
+            .storage
+            .set_baseline(self.cfg.traces.subtract_baseline, baseline);
+        self.after_recalculation(updated);
+    }
+
+    fn load_baseline_file(&mut self) -> Baseline {
+        if self.cfg.baseline_file.trim().is_empty() {
+            return Baseline::default();
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use std::io::BufReader;
+            let path = self.cfg.baseline_file.clone();
+            match std::fs::File::open(&path) {
+                Ok(file) => {
+                    let mut reader = BufReader::new(file);
+                    let frames = crate::data::soapy_bin::read_frames(&mut reader);
+                    match crate::data::soapy_bin::average_frames(&frames) {
+                        Some((x, y)) => {
+                            self.push_log(format!(
+                                "Baseline: averaged {} sweeps of {} bins from {path}",
+                                frames.len(),
+                                y.len()
+                            ));
+                            Baseline {
+                                x: Some(x),
+                                y: Some(y),
+                            }
+                        }
+                        None => {
+                            self.push_log(format!("Baseline: no usable sweeps in {path}"));
+                            Baseline::default()
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.push_log(format!("Baseline: cannot open {path}: {e}"));
+                    Baseline::default()
+                }
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            // Browsers have no path-addressable filesystem; a baseline would
+            // have to arrive through a file input or a drop.
+            self.push_log("Baseline files are not available in the browser build.");
+            Baseline::default()
+        }
+    }
+
+    /// Refresh everything that a full recalculation invalidates.
+    fn after_recalculation(&mut self, updated: Updated) {
+        if !updated.any() {
+            return;
+        }
+        self.spectrum.sync(&self.storage, updated);
+        if updated.recalculated || updated.history {
+            self.waterfall.upload_history(self.storage.history());
+            self.levels.invalidate();
+        }
+        if self.cfg.traces.persistence {
+            let length = self.cfg.persistence_length;
+            self.spectrum.refill_persistence(&mut self.storage, length);
+        }
+    }
+
+    // --- panels -----------------------------------------------------------
+
+    fn menu_bar(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("spectroscope.menu").show(ctx, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    if ui.button("Settings...").clicked() {
+                        self.dialogs.open_settings(&self.cfg);
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("Quit").clicked() {
+                        ui.close();
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+
+                ui.menu_button("View", |ui| {
+                    ui.checkbox(&mut self.cfg.show_controls_panel, "Control panel");
+                    ui.checkbox(&mut self.cfg.show_waterfall, "Waterfall");
+                    ui.checkbox(&mut self.show_log, "Backend log");
+                    ui.separator();
+                    if ui.checkbox(&mut self.cfg.dark_mode, "Dark theme").changed() {
+                        apply_theme(ctx, self.cfg.dark_mode);
+                    }
+                });
+
+                ui.menu_button("Help", |ui| {
+                    if ui.button("About").clicked() {
+                        self.dialogs.open_about();
+                        ui.close();
+                    }
+                });
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if self.running {
+                        ui.label(
+                            egui::RichText::new("● running")
+                                .color(egui::Color32::from_rgb(120, 220, 120)),
+                        );
+                    }
+                    ui.label(egui::RichText::new(self.source.info().label).weak());
+                });
+            });
+        });
+    }
+
+    fn status_bar(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::bottom("spectroscope.status").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                if let Some(err) = self.error.clone() {
+                    ui.label(
+                        egui::RichText::new(format!("⚠ {err}")).color(ui.visuals().error_fg_color),
+                    );
+                    if ui.small_button("dismiss").clicked() {
+                        self.error = None;
+                    }
+                    ui.separator();
+                }
+
+                let mut parts: Vec<String> = Vec::new();
+                if self.hops > 0 {
+                    parts.push(format!("Frequency hops: {}", self.hops));
+                }
+                if self.storage.has_data() || self.running {
+                    let total = now_monotonic() - self.run_started_at;
+                    let fps = if self.sweep_time > 0.0 {
+                        1.0 / self.sweep_time
+                    } else {
+                        0.0
+                    };
+                    parts.push(format!(
+                        "Total time: {} | Sweep time: {:.2} s ({:.2} FPS)",
+                        human_time(total),
+                        self.sweep_time,
+                        fps
+                    ));
+                }
+                if self.storage.has_data() {
+                    parts.push(format!("{} bins", self.storage.bins()));
+                }
+                ui.label(parts.join(" | "));
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if self.running {
+                        ui.add(self.progress_bar());
+                    }
+                });
+            });
+        });
+    }
+
+    /// Progress towards the next expected sweep.
+    ///
+    /// Mirrors `update_progress()`: with no meaningful interval, or once the
+    /// sweep is overdue, the bar animates instead of showing a fraction,
+    /// because the remaining time is then unknown.
+    fn progress_bar(&self) -> egui::ProgressBar {
+        let elapsed = now_monotonic() - self.last_frame_at;
+        let interval = self.cfg.interval;
+
+        if interval < 1.0 || elapsed > interval + 1.0 {
+            egui::ProgressBar::new(1.0)
+                .desired_width(250.0)
+                .animate(true)
+                .text("")
+        } else {
+            let fraction = (elapsed / interval).clamp(0.0, 1.0) as f32;
+            egui::ProgressBar::new(fraction)
+                .desired_width(250.0)
+                .text(format!("{:.1} s", (interval - elapsed).max(0.0)))
+        }
+    }
+
+    fn side_panel(&mut self, ctx: &egui::Context) {
+        egui::SidePanel::right("spectroscope.controls")
+            .resizable(true)
+            .default_width(260.0)
+            .width_range(220.0..=460.0)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    self.controls_section(ui, ctx);
+                    ui.add_space(4.0);
+                    self.frequency_section(ui);
+                    ui.add_space(4.0);
+                    self.settings_section(ui);
+                    ui.add_space(4.0);
+                    self.levels_section(ui);
+                });
+            });
+    }
+
+    fn controls_section(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        egui::CollapsingHeader::new("Controls")
+            .default_open(true)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let w = (ui.available_width() - 8.0) / 2.0;
+                    if ui
+                        .add_enabled(
+                            !self.running,
+                            egui::Button::new("Start").min_size(egui::vec2(w, 26.0)),
+                        )
+                        .clicked()
+                    {
+                        self.start(ctx, false);
+                    }
+                    if ui
+                        .add_enabled(
+                            self.running,
+                            egui::Button::new("Stop").min_size(egui::vec2(w, 26.0)),
+                        )
+                        .clicked()
+                    {
+                        self.stop();
+                    }
+                });
+                if ui
+                    .add_enabled(
+                        !self.running,
+                        egui::Button::new("Single shot")
+                            .min_size(egui::vec2(ui.available_width(), 24.0)),
+                    )
+                    .clicked()
+                {
+                    self.start(ctx, true);
+                }
+            });
+    }
+
+    fn frequency_section(&mut self, ui: &mut egui::Ui) {
+        let limits = self.source.info().limits;
+        let lnb_mhz = self.cfg.lnb_lo / 1e6;
+        let (start_min, start_max) = self.cfg.start_freq_bounds(&limits, lnb_mhz);
+        let (stop_min, stop_max) = self.cfg.stop_freq_bounds(&limits, lnb_mhz);
+
+        egui::CollapsingHeader::new("Frequency")
+            .default_open(true)
+            .show(ui, |ui| {
+                egui::Grid::new("freq.grid")
+                    .num_columns(2)
+                    .spacing([6.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.label("Start:");
+                        ui.add(
+                            egui::DragValue::new(&mut self.cfg.start_freq)
+                                .suffix(" MHz")
+                                .speed(0.1)
+                                .range(start_min..=start_max)
+                                .max_decimals(3),
+                        );
+                        ui.end_row();
+
+                        ui.label("Stop:");
+                        ui.add(
+                            egui::DragValue::new(&mut self.cfg.stop_freq)
+                                .suffix(" MHz")
+                                .speed(0.1)
+                                .range(stop_min..=stop_max)
+                                .max_decimals(3),
+                        );
+                        ui.end_row();
+
+                        ui.label("Bin size:");
+                        ui.add(
+                            egui::DragValue::new(&mut self.cfg.bin_size)
+                                .suffix(" kHz")
+                                .speed(0.1)
+                                .range(limits.bin_size.min..=limits.bin_size.max)
+                                .max_decimals(3),
+                        );
+                        ui.end_row();
+                    });
+
+                // A backwards range would make the sweep empty, so keep the two
+                // fields ordered the way the Qt spin-box minimums did.
+                if self.cfg.stop_freq < self.cfg.start_freq {
+                    ui.label(
+                        egui::RichText::new("Stop must be above start")
+                            .small()
+                            .color(ui.visuals().warn_fg_color),
+                    );
+                }
+                let bins = self.cfg.sweep_config(false).bin_count();
+                ui.label(egui::RichText::new(format!("{bins} bins")).small().weak());
+            });
+    }
+
+    fn settings_section(&mut self, ui: &mut egui::Ui) {
+        let limits = self.source.info().limits;
+        let mut smoothing_dirty = false;
+        let mut persistence_dirty = false;
+        let mut baseline_dirty = false;
+
+        egui::CollapsingHeader::new("Settings")
+            .default_open(true)
+            .show(ui, |ui| {
+                egui::Grid::new("settings.inline")
+                    .num_columns(2)
+                    .spacing([6.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.label("Interval [s]:");
+                        ui.add(
+                            egui::DragValue::new(&mut self.cfg.interval)
+                                .speed(0.05)
+                                .range(limits.interval.min..=limits.interval.max)
+                                .max_decimals(3),
+                        );
+                        ui.end_row();
+
+                        ui.label("Gain [dB]:");
+                        // -1 is the backends' "let the device decide" sentinel,
+                        // which the Qt build surfaced as the special value "auto".
+                        let mut gain = self.cfg.gain;
+                        let response = ui.add(
+                            egui::DragValue::new(&mut gain)
+                                .speed(0.5)
+                                .range(limits.gain.min..=limits.gain.max)
+                                .max_decimals(1)
+                                .custom_formatter(|v, _| {
+                                    if v < 0.0 {
+                                        "auto".to_owned()
+                                    } else {
+                                        format!("{v:.1}")
+                                    }
+                                })
+                                .custom_parser(|s| {
+                                    if s.trim().eq_ignore_ascii_case("auto") {
+                                        Some(-1.0)
+                                    } else {
+                                        s.trim().parse().ok()
+                                    }
+                                }),
+                        );
+                        if response.changed() {
+                            self.cfg.gain = gain;
+                        }
+                        ui.end_row();
+
+                        if !limits.ppm.is_fixed() {
+                            ui.label("Corr. [ppm]:");
+                            ui.add(
+                                egui::DragValue::new(&mut self.cfg.ppm)
+                                    .speed(1.0)
+                                    .range(limits.ppm.min..=limits.ppm.max),
+                            );
+                            ui.end_row();
+                        }
+
+                        if !limits.crop.is_fixed() {
+                            ui.label("Crop [%]:");
+                            ui.add(
+                                egui::DragValue::new(&mut self.cfg.crop)
+                                    .speed(1.0)
+                                    .range(limits.crop.min..=limits.crop.max),
+                            );
+                            ui.end_row();
+                        }
+                    });
+
+                ui.separator();
+
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.cfg.traces.main_curve, "Main curve");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Colors...").clicked() {
+                            self.dialogs.open_colors(&self.cfg);
+                        }
+                    });
+                });
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.cfg.traces.peak_hold_max, "Max. hold");
+                    ui.checkbox(&mut self.cfg.traces.peak_hold_min, "Min. hold");
+                });
+                ui.checkbox(&mut self.cfg.traces.average, "Average");
+
+                ui.horizontal(|ui| {
+                    if ui
+                        .checkbox(&mut self.cfg.traces.smooth, "Smoothing")
+                        .changed()
+                    {
+                        smoothing_dirty = true;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("...").clicked() {
+                            self.dialogs.open_smoothing(&self.cfg);
+                        }
+                    });
+                });
+
+                ui.horizontal(|ui| {
+                    if ui
+                        .checkbox(&mut self.cfg.traces.persistence, "Persistence")
+                        .changed()
+                    {
+                        persistence_dirty = true;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("...").clicked() {
+                            self.dialogs.open_persistence(&self.cfg);
+                        }
+                    });
+                });
+
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.cfg.traces.baseline, "Baseline");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("...").clicked() {
+                            self.dialogs.open_baseline(&self.cfg);
+                        }
+                    });
+                });
+                if ui
+                    .checkbox(&mut self.cfg.traces.subtract_baseline, "Subtract baseline")
+                    .changed()
+                {
+                    baseline_dirty = true;
+                }
+            });
+
+        if smoothing_dirty {
+            let updated = self.storage.set_smooth(
+                self.cfg.traces.smooth,
+                self.cfg.smooth_length,
+                self.cfg.smooth_window,
+            );
+            self.after_recalculation(updated);
+        }
+        if baseline_dirty {
+            self.reload_baseline();
+        }
+        if persistence_dirty && self.cfg.traces.persistence {
+            let length = self.cfg.persistence_length;
+            self.spectrum.refill_persistence(&mut self.storage, length);
+        }
+    }
+
+    fn levels_section(&mut self, ui: &mut egui::Ui) {
+        let mut outcome = None;
+        egui::CollapsingHeader::new("Levels")
+            .default_open(true)
+            .show(ui, |ui| {
+                outcome = Some(self.levels.ui(ui, &mut self.cfg.levels, &self.storage));
+            });
+
+        if outcome.is_some_and(|o| o.colormap_changed) {
+            self.waterfall
+                .set_colormap(self.cfg.levels.lut(), self.cfg.levels.reverse);
+        }
+    }
+
+    fn central(&mut self, ctx: &egui::Context) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let total = ui.available_height();
+            if !self.cfg.show_waterfall {
+                self.spectrum.ui(ui, &self.cfg, total - 24.0);
+                return;
+            }
+
+            let handle = 7.0;
+            let spectrum_height = (total * self.cfg.plot_split).clamp(80.0, total - 80.0);
+
+            self.spectrum.ui(ui, &self.cfg, spectrum_height - 24.0);
+
+            // A draggable separator, standing in for the Qt QSplitter.
+            let (rect, response) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), handle),
+                egui::Sense::drag(),
+            );
+            if response.dragged() {
+                self.cfg.plot_split =
+                    (self.cfg.plot_split + response.drag_delta().y / total).clamp(0.1, 0.9);
+            }
+            if response.hovered() || response.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+            }
+            let color = if response.hovered() || response.dragged() {
+                ui.visuals().widgets.hovered.bg_fill
+            } else {
+                ui.visuals().widgets.noninteractive.bg_stroke.color
+            };
+            ui.painter()
+                .rect_filled(rect.shrink2(egui::vec2(0.0, 2.5)), 1.0, color);
+
+            let data_x = match self.storage.x() {
+                Some(x) if x.len() > 1 => (x[0], x[x.len() - 1]),
+                _ => (0.0, 1.0),
+            };
+            let view_x = if self.spectrum.view_x.1 > self.spectrum.view_x.0 {
+                self.spectrum.view_x
+            } else {
+                data_x
+            };
+
+            let history = self.storage.history();
+            let view = WaterfallView {
+                low: self.cfg.levels.low,
+                high: self.cfg.levels.high,
+                data_x,
+                view_x,
+                row_interval: if self.sweep_time > 0.0 {
+                    self.sweep_time
+                } else {
+                    0.0
+                },
+            };
+            let (head, rows) = (history.head(), history.len());
+            self.waterfall.ui(ui, head, rows, &view);
+        });
+    }
+
+    fn log_window(&mut self, ctx: &egui::Context) {
+        if !self.show_log {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("Backend log")
+            .open(&mut open)
+            .default_size([760.0, 320.0])
+            .resizable(true)
+            .show(ctx, |ui| {
+                if ui.button("Clear").clicked() {
+                    self.log.clear();
+                }
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        for line in &self.log {
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(line).monospace().small())
+                                    .wrap_mode(egui::TextWrapMode::Extend),
+                            );
+                        }
+                    });
+            });
+        self.show_log = open;
+    }
+}
+
+impl eframe::App for SpectroScopeApp {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, crate::config::STORAGE_KEY, &self.cfg);
+    }
+
+    fn on_exit(&mut self) {
+        // The acquisition owns a child process or a socket; leaving it running
+        // after the window closes would strand it.
+        self.stop();
+    }
+
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let backend_before = self.cfg.backend.clone();
+        let updated = self.pump_events();
+        if updated.any() {
+            self.spectrum.sync(&self.storage, updated);
+        }
+
+        self.menu_bar(ctx);
+        self.status_bar(ctx);
+        if self.cfg.show_controls_panel {
+            self.side_panel(ctx);
+        }
+        self.central(ctx);
+        self.log_window(ctx);
+
+        let outcome = self.dialogs.ui(ctx, &mut self.cfg);
+        if outcome.backend_changed || self.cfg.backend != backend_before {
+            let was_running = self.running;
+            self.stop();
+            self.source = self.cfg.source();
+            self.cfg.clamp_to(&self.source.info().limits);
+            if was_running {
+                self.start(ctx, false);
+            }
+        }
+        if outcome.history_size_changed {
+            self.storage
+                .set_max_history_size(self.cfg.waterfall_history_size);
+            self.wf_geometry = (0, 0);
+            self.levels.invalidate();
+        }
+        if outcome.smoothing_changed {
+            let u = self.storage.set_smooth(
+                self.cfg.traces.smooth,
+                self.cfg.smooth_length,
+                self.cfg.smooth_window,
+            );
+            self.after_recalculation(u);
+        }
+        if outcome.baseline_changed {
+            self.reload_baseline();
+        }
+        if outcome.persistence_changed && self.cfg.traces.persistence {
+            let length = self.cfg.persistence_length;
+            self.spectrum.refill_persistence(&mut self.storage, length);
+        }
+
+        // While a sweep is in flight the status bar and the progress bar are
+        // time-dependent, so repaint steadily; otherwise sleep until the next
+        // event wakes us through the EventSink.
+        if self.running {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+}
+
+fn merge(a: Updated, b: Updated) -> Updated {
+    Updated {
+        data: a.data || b.data,
+        history: a.history || b.history,
+        average: a.average || b.average,
+        peak_hold_max: a.peak_hold_max || b.peak_hold_max,
+        peak_hold_min: a.peak_hold_min || b.peak_hold_min,
+        baseline: a.baseline || b.baseline,
+        recalculated: a.recalculated || b.recalculated,
+    }
+}
+
+/// Pin the theme.
+///
+/// `set_visuals` is not enough: eframe re-applies the system theme whenever the
+/// OS reports one, so a dark preference silently reverted to light on the next
+/// frame. Setting the preference is what actually sticks.
+fn apply_theme(ctx: &egui::Context, dark: bool) {
+    ctx.set_theme(if dark {
+        egui::ThemePreference::Dark
+    } else {
+        egui::ThemePreference::Light
+    });
+}
+
+/// Window title including the version, matching the Qt build's.
+pub fn window_title() -> String {
+    format!("{APP_NAME} {VERSION}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_is_a_union() {
+        let a = Updated {
+            data: true,
+            ..Default::default()
+        };
+        let b = Updated {
+            average: true,
+            recalculated: true,
+            ..Default::default()
+        };
+        let m = merge(a, b);
+        assert!(m.data && m.average && m.recalculated);
+        assert!(!m.peak_hold_max);
+        assert_eq!(
+            merge(Updated::default(), Updated::default()),
+            Updated::default()
+        );
+        assert_eq!(merge(Updated::ALL, Updated::default()), Updated::ALL);
+    }
+
+    #[test]
+    fn window_title_has_the_version() {
+        let t = window_title();
+        assert!(t.starts_with(APP_NAME));
+        assert!(t.contains(VERSION));
+    }
+}

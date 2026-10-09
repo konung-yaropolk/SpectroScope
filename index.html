@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <title>SpectroScope</title>
+  <meta name="description" content="Spectrum analyzer for multiple SDR platforms" />
+  <meta name="color-scheme" content="dark light" />
+  <link rel="icon" href="icon/icon.svg" type="image/svg+xml" />
+
+  <style>
+    :root { --bg: #0e0e10; --fg: #d8d8dc; --accent: #7fc4ff; }
+    @media (prefers-color-scheme: light) {
+      :root { --bg: #f4f4f6; --fg: #1c1c1f; --accent: #0a62a8; }
+    }
+
+    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: var(--bg); }
+    body { font: 14px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; color: var(--fg); }
+
+    /* egui wants the canvas to own the whole viewport and handle its own
+       scaling; letting the browser letterbox it would blur the plot. */
+    canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+    #status {
+      position: absolute; inset: 0; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 1rem; text-align: center;
+      padding: 0 1.5rem;
+    }
+    #status[hidden] { display: none; }
+    .spinner {
+      width: 2.2rem; height: 2.2rem; border-radius: 50%;
+      border: 3px solid color-mix(in srgb, var(--fg) 20%, transparent);
+      border-top-color: var(--accent); animation: spin 0.9s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } }
+    code { background: color-mix(in srgb, var(--fg) 12%, transparent); padding: 0.1em 0.35em; border-radius: 3px; }
+    .error { color: #ff6b6b; max-width: 44rem; }
+    .hint { opacity: 0.7; font-size: 0.9em; max-width: 40rem; }
+  </style>
+</head>
+<body>
+  <canvas id="spectroscope_canvas"></canvas>
+
+  <div id="status">
+    <div class="spinner" id="spinner"></div>
+    <div id="status_text">Loading SpectroScope…</div>
+    <div class="hint" id="status_hint"></div>
+  </div>
+
+  <script type="module">
+    const statusBox = document.getElementById("status");
+    const statusText = document.getElementById("status_text");
+    const statusHint = document.getElementById("status_hint");
+    const spinner = document.getElementById("spinner");
+
+    function fail(message, hint) {
+      spinner.remove();
+      statusText.className = "error";
+      statusText.textContent = message;
+      statusHint.textContent = hint ?? "";
+      statusBox.hidden = false;
+    }
+
+    // WebGPU is preferred; the wasm build also enables wgpu's WebGL backend, so
+    // a browser without WebGPU still renders. Only report what actually failed.
+    if (!("gpu" in navigator)) {
+      statusHint.textContent = "WebGPU unavailable — falling back to WebGL.";
+    }
+
+    try {
+      const wasm = await import("./pkg/spectroscope.js");
+      await wasm.default();
+      await wasm.start("spectroscope_canvas");
+      statusBox.hidden = true;
+    } catch (e) {
+      console.error(e);
+      const detail = e && e.message ? e.message : String(e);
+      if (detail.includes("Failed to fetch") || detail.includes("Failed to resolve")) {
+        fail(
+          "SpectroScope has not been built for the web yet.",
+          "Run: wasm-pack build --target web --out-dir pkg --no-default-features",
+        );
+      } else {
+        fail("SpectroScope failed to start.", detail);
+      }
+    }
+  </script>
+
+  <noscript>
+    <div id="status">SpectroScope needs JavaScript and WebAssembly.</div>
+  </noscript>
+</body>
+</html>

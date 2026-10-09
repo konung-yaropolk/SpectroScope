@@ -1,0 +1,204 @@
+[package]
+name = "spectroscope"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Spectrum analyzer for multiple SDR platforms (Rust/egui rewrite of QSpectrumAnalyzer)"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/konung-yaropolk/SpectroScope"
+authors = ["SpectroScope contributors"]
+build = "build.rs"
+
+[lib]
+name = "spectroscope"
+# `cdylib` is what Android (cargo-apk / cargo-ndk) and wasm-bindgen link against.
+crate-type = ["lib", "cdylib"]
+
+[[bin]]
+name = "spectroscope"
+path = "src/main.rs"
+
+# ---------------------------------------------------------------------------
+# Features
+# ---------------------------------------------------------------------------
+# `fftw` is on by default and is simply ignored on targets that cannot build
+# FFTW (wasm32, Android) -- see build.rs, which turns it into the `use_fftw`
+# cfg only where the dependency is actually present. `rustfft` is always
+# compiled in as the portable fallback, so every target has a working FFT.
+[features]
+default = ["fftw"]
+fftw = ["dep:fftw"]
+
+[dependencies]
+# --- GUI ---------------------------------------------------------------------
+# wgpu is the only renderer we enable; `eframe::wgpu` / `eframe::egui_wgpu`
+# re-exports are used everywhere so the wgpu version can never drift.
+#
+# `default-features = false` drops eframe's `glow` renderer, which we do not
+# want -- but it also drops the rest of eframe's defaults, so every one we still
+# need is listed back explicitly. Two of those matter a great deal:
+#   * `x11` and `wayland` are what make a Linux build able to open a window;
+#   * eframe's default also carries `egui-wgpu?/default`, which is what enables
+#     wgpu's platform backends. Without it wgpu compiles but panics at startup
+#     with "No wgpu backend feature that is implemented for the target platform
+#     was enabled", so the backends are selected per target further down.
+eframe = { version = "0.32", default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "persistence",
+    "wayland",
+    "web_screen_reader",
+    "wgpu",
+    "x11",
+] }
+egui = "0.32"
+egui_plot = "0.33"
+
+# --- data / infra ------------------------------------------------------------
+bytemuck = { version = "1", features = ["derive"] }
+crossbeam-channel = "0.5"
+log = "0.4"
+num-complex = "0.4"
+rustfft = "6"
+serde = { version = "1", features = ["derive"] }
+shell-words = "1"
+
+# ---------------------------------------------------------------------------
+# Native-only dependencies
+# ---------------------------------------------------------------------------
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+env_logger = { version = "0.11", default-features = false, features = [
+    "auto-color",
+    "humantime",
+] }
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+
+# The native graphics backends. Cargo unifies features across the graph, so
+# naming wgpu here is what gives eframe's own copy its backends. Each of these
+# is inert on targets it does not apply to, so one list covers all three
+# desktops; `gles` is the fallback for machines with no usable Vulkan/DX12.
+wgpu = { version = "25", default-features = false, features = [
+    "dx12",
+    "gles",
+    "metal",
+    "vulkan",
+    "wgsl",
+] }
+
+# FFTW is only pulled in where it can actually be built. Activating the
+# `fftw` feature on wasm32 / Android is therefore harmless.
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
+fftw = { version = "0.8", optional = true }
+
+# ---------------------------------------------------------------------------
+# Web-only dependencies
+# ---------------------------------------------------------------------------
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The web backends, for the same reason as the native ones above: without them
+# egui-wgpu does not even compile for wasm32. WebGPU is preferred at runtime and
+# WebGL is the fallback for browsers that lack it.
+#
+# `fragile-send-sync-non-atomic-wasm` is also part of what eframe's default
+# features would have switched on: wasm32 without threads has no real `Send`, and
+# wgpu's handles are only usable at all under that escape hatch.
+wgpu = { version = "25", default-features = false, features = [
+    "fragile-send-sync-non-atomic-wasm",
+    "webgpu",
+    "webgl",
+    "wgsl",
+] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
+getrandom = { version = "0.2", features = ["js"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
+version = "0.3"
+features = [
+    "BinaryType",
+    "Blob",
+    "CloseEvent",
+    "Document",
+    "Element",
+    "ErrorEvent",
+    "Event",
+    "File",
+    "FileList",
+    "FileReader",
+    "HtmlCanvasElement",
+    "HtmlInputElement",
+    "MessageEvent",
+    "Url",
+    "WebSocket",
+    "Window",
+]
+
+# ---------------------------------------------------------------------------
+# Android-only dependencies
+# ---------------------------------------------------------------------------
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.14"
+# Must match the version winit 0.30 links, or there will be two AndroidApp types.
+android-activity = { version = "0.6", features = ["native-activity"] }
+
+[dev-dependencies]
+ron = "0.10"
+
+# Host-side only: embeds the icon and version strings into the Windows .exe.
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"
+
+# ---------------------------------------------------------------------------
+# Profiles
+# ---------------------------------------------------------------------------
+[profile.release]
+opt-level = 3
+lto = "fat"        # Enable Link-Time Optimization
+codegen-units = 1  # Helps LTO optimize more effectively
+strip = true       # Automatically strip symbols from the binary.
+panic = 'unwind'   # 'abort' to kill process or 'unwind' for safe memory cleanup
+
+# Keep the DSP fast even in debug builds, otherwise live sweeps crawl.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev]
+opt-level = 1
+
+# Smaller wasm bundles.
+[profile.release-wasm]
+inherits = "release"
+opt-level = "s"
+panic = "abort"
+
+# ---------------------------------------------------------------------------
+# Android packaging (cargo-apk)
+# ---------------------------------------------------------------------------
+[package.metadata.android]
+package = "cz.eutopia.spectroscope"
+build_targets = ["aarch64-linux-android", "armv7-linux-androideabi"]
+apk_name = "SpectroScope"
+
+[package.metadata.android.sdk]
+min_sdk_version = 26
+target_sdk_version = 34
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.INTERNET"
+
+[[package.metadata.android.uses_feature]]
+name = "android.hardware.usb.host"
+required = false
+
+[package.metadata.android.application]
+label = "SpectroScope"
+
+# ---------------------------------------------------------------------------
+# Windows packaging
+# ---------------------------------------------------------------------------
+[package.metadata.winres]
+OriginalFilename = "SpectroScope"
+LegalCopyright = "konung_yaropolk © 2026"
+FileDescription = "SpectroScope"
+ProductName = "SpectroScope"
