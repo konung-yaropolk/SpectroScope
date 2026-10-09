@@ -51,7 +51,13 @@ pub struct SpectroScopeApp {
     /// Monotonic seconds, for the status bar and the progress bar.
     run_started_at: f64,
     last_frame_at: f64,
+    /// Smoothed seconds per sweep. Used for the status bar and for the
+    /// waterfall time axis.
     sweep_time: f64,
+    /// Sweeps accepted this run, so the first gap can be ignored.
+    sweeps_seen: u64,
+    /// When the first sweep of the run landed.
+    first_frame_at: f64,
 }
 
 impl SpectroScopeApp {
@@ -89,6 +95,8 @@ impl SpectroScopeApp {
             run_started_at: now,
             last_frame_at: now,
             sweep_time: 0.0,
+            sweeps_seen: 0,
+            first_frame_at: now,
         }
     }
 
@@ -120,6 +128,8 @@ impl SpectroScopeApp {
         self.run_started_at = now;
         self.last_frame_at = now;
         self.sweep_time = 0.0;
+        self.sweeps_seen = 0;
+        self.first_frame_at = now;
 
         let (tx, rx) = crossbeam_channel::unbounded();
         let sink = EventSink::new(tx, Some(ctx.clone()));
@@ -145,6 +155,12 @@ impl SpectroScopeApp {
         }
         self.events = None;
         self.running = false;
+    }
+
+    /// Put both views back where a fresh run would have them.
+    fn reset_view(&mut self) {
+        self.spectrum.request_refit();
+        self.waterfall.reset_view();
     }
 
     fn push_log(&mut self, line: impl Into<String>) {
@@ -204,8 +220,12 @@ impl SpectroScopeApp {
 
     fn accept_frame(&mut self, frame: Frame) -> Updated {
         let now = now_monotonic();
-        self.sweep_time = now - self.last_frame_at;
         self.last_frame_at = now;
+        self.sweeps_seen += 1;
+        if self.sweeps_seen == 1 {
+            self.first_frame_at = now;
+        }
+        self.sweep_time = average_sweep_time(now, self.first_frame_at, self.sweeps_seen);
 
         match self.storage.update(frame) {
             Ok(updated) => {
@@ -494,6 +514,18 @@ impl SpectroScopeApp {
                 {
                     self.start(ctx, true);
                 }
+                if ui
+                    .add(
+                        egui::Button::new("Reset view")
+                            .min_size(egui::vec2(ui.available_width(), 24.0)),
+                    )
+                    .on_hover_text(
+                        "Fit the spectrum to the sweep and return the waterfall to the newest                          sweep at its default scale",
+                    )
+                    .clicked()
+                {
+                    self.reset_view();
+                }
             });
     }
 
@@ -722,14 +754,16 @@ impl SpectroScopeApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             let total = ui.available_height();
             if !self.cfg.show_waterfall {
-                self.spectrum.ui(ui, &self.cfg, total - 24.0);
+                self.spectrum
+                    .ui(ui, &self.cfg, (total - READOUT_HEIGHT).max(1.0));
                 return;
             }
 
             let handle = 7.0;
-            let spectrum_height = (total * self.cfg.plot_split).clamp(80.0, total - 80.0);
+            let spectrum_height = split_height(total, handle, self.cfg.plot_split);
 
-            self.spectrum.ui(ui, &self.cfg, spectrum_height - 24.0);
+            self.spectrum
+                .ui(ui, &self.cfg, (spectrum_height - READOUT_HEIGHT).max(1.0));
 
             // A draggable separator, standing in for the Qt QSplitter.
             let (rect, response) = ui.allocate_exact_size(
@@ -761,6 +795,17 @@ impl SpectroScopeApp {
                 data_x
             };
 
+            // Reserve exactly the strips the spectrum plot spends on its axis
+            // labels, so the two images line up column for column.
+            let area = ui.max_rect();
+            let (gutter_left, gutter_right) = match self.spectrum.plot_rect {
+                Some(plot) => (
+                    (plot.left() - area.left()).max(0.0),
+                    (area.right() - plot.right()).max(0.0),
+                ),
+                None => (0.0, 0.0),
+            };
+
             let history = self.storage.history();
             let view = WaterfallView {
                 low: self.cfg.levels.low,
@@ -772,9 +817,18 @@ impl SpectroScopeApp {
                 } else {
                     0.0
                 },
+                counter: history.counter(),
+                gutter_left,
+                gutter_right,
             };
             let (head, rows) = (history.head(), history.len());
-            self.waterfall.ui(ui, head, rows, &view);
+            let wf = self.waterfall.ui(ui, head, rows, &view);
+
+            // The waterfall does not own the frequency axis, so a zoom or pan
+            // there is applied to the plot and picked up here next frame.
+            if let Some((x0, x1)) = wf.requested_view_x {
+                self.spectrum.set_view_x(x0, x1);
+            }
         });
     }
 
@@ -874,6 +928,48 @@ impl eframe::App for SpectroScopeApp {
     }
 }
 
+/// Seconds per sweep, averaged over the whole run.
+///
+/// Deliberately not the gap between the last two sweeps, and not an
+/// exponential average of it either. The raw gap is far too jumpy to label a
+/// time axis with: the first one measures start-up rather than a sweep, and a
+/// browser throttles background timers so hard that a tab returning to the
+/// foreground delivers a burst of sweeps microseconds apart -- enough to drag
+/// an exponential average down by a factor of five before it recovers. Dividing
+/// elapsed time by sweeps counted is immune to how they were delivered, and
+/// since changing the interval restarts the run there is no rate change to
+/// track within one.
+fn average_sweep_time(now: f64, first_frame_at: f64, sweeps_seen: u64) -> f64 {
+    if sweeps_seen < 2 {
+        return 0.0;
+    }
+    let elapsed = now - first_frame_at;
+    if !elapsed.is_finite() || elapsed <= 0.0 {
+        return 0.0;
+    }
+    elapsed / (sweeps_seen - 1) as f64
+}
+
+/// Height the crosshair readout line above the plot takes.
+const READOUT_HEIGHT: f32 = 24.0;
+
+/// Smallest usable height for either pane of the split.
+const MIN_PANE_HEIGHT: f32 = 48.0;
+
+/// Height of the spectrum pane for a given split fraction.
+///
+/// `f32::clamp` panics when `min > max`, which is exactly what a naive
+/// `clamp(MIN, total - MIN)` does as soon as the window is shorter than two
+/// panes -- briefly true while a web canvas is still sizing itself, and it
+/// aborted the whole application. Below that the space is simply halved.
+fn split_height(total: f32, handle: f32, fraction: f32) -> f32 {
+    let usable = (total - handle).max(0.0);
+    if usable < MIN_PANE_HEIGHT * 2.0 {
+        return usable * 0.5;
+    }
+    (total * fraction).clamp(MIN_PANE_HEIGHT, usable - MIN_PANE_HEIGHT)
+}
+
 fn merge(a: Updated, b: Updated) -> Updated {
     Updated {
         data: a.data || b.data,
@@ -907,6 +1003,59 @@ pub fn window_title() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sweep_time_needs_two_sweeps_to_mean_anything() {
+        assert_eq!(average_sweep_time(5.0, 5.0, 0), 0.0);
+        assert_eq!(average_sweep_time(5.0, 5.0, 1), 0.0);
+    }
+
+    #[test]
+    fn sweep_time_is_the_run_average() {
+        // 11 sweeps spanning 10 s is one per second.
+        assert!((average_sweep_time(110.0, 100.0, 11) - 1.0).abs() < 1e-9);
+        assert!((average_sweep_time(110.0, 100.0, 101) - 0.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_delivery_burst_cannot_distort_the_rate() {
+        // Ten sweeps over 10 s, then six more delivered in the same instant by
+        // a tab coming back from the background: the average barely moves,
+        // where the last-gap reading would have said 3000 FPS.
+        let steady = average_sweep_time(110.0, 100.0, 11);
+        let after_burst = average_sweep_time(110.0, 100.0, 17);
+        assert!((steady - 1.0).abs() < 1e-9);
+        assert!(after_burst > 0.6, "{after_burst}");
+    }
+
+    #[test]
+    fn sweep_time_rejects_a_nonsense_clock() {
+        assert_eq!(average_sweep_time(100.0, 110.0, 5), 0.0);
+        assert_eq!(average_sweep_time(f64::NAN, 100.0, 5), 0.0);
+    }
+
+    #[test]
+    fn split_height_never_panics_on_a_small_window() {
+        // The clamp form this replaced aborted the whole app here.
+        for total in [0.0f32, 1.0, 7.0, 50.0, 95.0, 103.0, 160.0, 800.0] {
+            for fraction in [0.0f32, 0.1, 0.5, 0.9, 1.0] {
+                let h = split_height(total, 7.0, fraction);
+                assert!(
+                    h.is_finite() && h >= 0.0,
+                    "total {total}, f {fraction} -> {h}"
+                );
+                assert!(h <= total.max(0.0), "total {total} -> {h}");
+            }
+        }
+    }
+
+    #[test]
+    fn split_height_honours_the_fraction_when_there_is_room() {
+        let h = split_height(1000.0, 7.0, 0.25);
+        assert!((h - 250.0).abs() < 1e-3, "{h}");
+        assert!(split_height(1000.0, 7.0, 0.0) >= MIN_PANE_HEIGHT);
+        assert!(split_height(1000.0, 7.0, 1.0) <= 1000.0 - 7.0 - MIN_PANE_HEIGHT);
+    }
 
     #[test]
     fn merge_is_a_union() {

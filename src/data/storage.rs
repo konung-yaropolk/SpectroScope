@@ -13,6 +13,23 @@ use std::sync::Arc;
 use crate::dsp::smooth::{SmoothWindow, Smoother};
 use crate::sources::Frame;
 
+/// Ceiling on the history ring, in bytes.
+///
+/// The requested row count is a *time* depth, but the cost of it scales with
+/// the sweep width: 4096 rows of a 56k-bin sweep is 920 MB, which would be an
+/// out-of-memory abort rather than a deep waterfall. Rows are given up first
+/// because a narrower time window is a far smaller loss than failing to run.
+const HISTORY_BYTE_BUDGET: usize = 128 << 20;
+
+/// Rows the ring can actually afford at this sweep width.
+fn affordable_rows(requested: usize, bins: usize) -> usize {
+    if bins == 0 {
+        return requested.max(1);
+    }
+    let max_rows = HISTORY_BYTE_BUDGET / (bins * std::mem::size_of::<f32>());
+    requested.min(max_rows.max(1)).max(1)
+}
+
 /// Which derived series changed during an update.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Updated {
@@ -225,7 +242,7 @@ impl DataStorage {
         self.max_history_size = size;
         let bins = self.history.bins();
         if bins > 0 {
-            self.history.reshape(bins, size);
+            self.history.reshape(bins, affordable_rows(size, bins));
         }
     }
 
@@ -271,8 +288,17 @@ impl DataStorage {
         // History keeps the *unsmoothed* trace, matching the original: the
         // waterfall shows raw measurements and smoothing stays a display
         // option that can be toggled without losing data.
-        if self.history.bins() != y.len() || self.history.capacity() != self.max_history_size {
-            self.history.reshape(y.len(), self.max_history_size);
+        let rows = affordable_rows(self.max_history_size, y.len());
+        if self.history.bins() != y.len() || self.history.capacity() != rows {
+            if rows < self.max_history_size {
+                log::warn!(
+                    "waterfall history limited to {rows} sweeps (asked for {}):                      {} bins would need {} MiB",
+                    self.max_history_size,
+                    y.len(),
+                    self.max_history_size * y.len() * 4 / (1 << 20)
+                );
+            }
+            self.history.reshape(y.len(), rows);
             self.applied_baseline = None;
         }
         self.history.append(&y);
@@ -656,6 +682,31 @@ mod tests {
             d.set_smooth(true, 11, SmoothWindow::Hanning),
             Updated::default()
         );
+    }
+
+    #[test]
+    fn history_rows_are_capped_by_memory() {
+        // A narrow sweep gets everything it asked for.
+        assert_eq!(affordable_rows(4096, 1024), 4096);
+        // A very wide one is cut down rather than allocating hundreds of MiB.
+        let rows = affordable_rows(4096, 56_167);
+        assert!(rows < 4096 && rows > 0, "{rows}");
+        assert!(rows * 56_167 * 4 <= HISTORY_BYTE_BUDGET);
+        // Never zero, however absurd the sweep.
+        assert_eq!(affordable_rows(4096, usize::MAX / 8), 1);
+        assert_eq!(affordable_rows(0, 1024), 1);
+        // No bins yet means nothing to budget against.
+        assert_eq!(affordable_rows(7, 0), 7);
+    }
+
+    #[test]
+    fn a_wide_sweep_does_not_allocate_the_full_history() {
+        let mut d = DataStorage::new(4096);
+        let wide = vec![-90.0f32; 50_000];
+        d.update(frame(1.0, &wide)).unwrap();
+        assert!(d.history().capacity() < 4096);
+        assert!(d.history().capacity() >= 1);
+        assert_eq!(d.history().len(), 1);
     }
 
     #[test]

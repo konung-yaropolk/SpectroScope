@@ -72,34 +72,36 @@ platform configuration directory.",
     );
 }
 
-/// The window/taskbar icon, drawn at startup rather than shipped as a file.
+/// The window and taskbar icon.
 ///
-/// It is a miniature waterfall: a Turbo-coloured spectral ridge, which is both
-/// recognisably this application and free of any image-decoding dependency.
+/// Decoded from the same `icon/` artwork that `build.rs` embeds into the `.exe`
+/// resource, so the title bar, the taskbar and Explorer all show one icon.
+/// Embedded with `include_bytes!` rather than read at runtime, so a moved or
+/// missing file cannot leave the window iconless.
 #[cfg(not(target_arch = "wasm32"))]
 fn load_icon() -> egui::IconData {
-    const N: u32 = 64;
-    let lut = &spectroscope::colormap::LUTS[4]; // Turbo
-    let mut rgba = Vec::with_capacity((N * N * 4) as usize);
+    const ICON_PNG: &[u8] = include_bytes!("../icon/icon256.png");
 
-    for y in 0..N {
-        for x in 0..N {
-            // Two peaks plus a noise floor, smeared slightly over time (y).
-            let fx = x as f32 / N as f32;
-            let drift = (y as f32 / N as f32) * 0.06;
-            let peak = |c: f32, w: f32| (-((fx - c) / w).powi(2)).exp();
-            let v = 0.12 + 0.80 * peak(0.33 + drift, 0.055) + 0.55 * peak(0.68 - drift, 0.075);
-
-            let i = (v.clamp(0.0, 1.0) * 255.0) as usize;
-            let [r, g, b] = lut[i];
-            rgba.extend_from_slice(&[r, g, b, 255]);
+    // A decode failure must never stop the application from starting; a 1x1
+    // transparent icon just means the platform falls back to its default.
+    match image::load_from_memory_with_format(ICON_PNG, image::ImageFormat::Png) {
+        Ok(img) => {
+            let img = img.into_rgba8();
+            let (width, height) = img.dimensions();
+            egui::IconData {
+                rgba: img.into_raw(),
+                width,
+                height,
+            }
         }
-    }
-
-    egui::IconData {
-        rgba,
-        width: N,
-        height: N,
+        Err(e) => {
+            log::warn!("could not decode the window icon: {e}");
+            egui::IconData {
+                rgba: vec![0; 4],
+                width: 1,
+                height: 1,
+            }
+        }
     }
 }
 

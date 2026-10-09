@@ -183,6 +183,7 @@ pub struct Config {
     pub bandwidth: f64,
     /// Hz.
     pub lnb_lo: f64,
+    /// Sweeps kept for the waterfall. Costs `bins * size * 4` bytes.
     pub waterfall_history_size: usize,
 
     // --- sweep ------------------------------------------------------------
@@ -238,7 +239,7 @@ impl Default for Config {
             sample_rate: 2_560_000.0,
             bandwidth: 0.0,
             lnb_lo: 0.0,
-            waterfall_history_size: 100,
+            waterfall_history_size: 4096,
 
             start_freq: 87.0,
             stop_freq: 108.0,
@@ -343,7 +344,12 @@ impl Config {
             self.stop_freq = stop_max;
         }
 
-        self.waterfall_history_size = self.waterfall_history_size.clamp(1, 20_000);
+        // The waterfall scrolls, so the history is sized for how far back the
+        // user may want to look rather than for the window height. The ceiling
+        // is a GPU one: the ring becomes a texture that many texels tall, and
+        // 16384 is the largest dimension common hardware allows.
+        // `Waterfall::reset` clamps again to what this device actually reports.
+        self.waterfall_history_size = self.waterfall_history_size.clamp(1, 16_384);
         self.smooth_length = self.smooth_length.clamp(1, 1001);
         self.persistence_length = self.persistence_length.clamp(1, 100);
         self.plot_split = self.plot_split.clamp(0.1, 0.9);

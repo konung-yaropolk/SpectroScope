@@ -74,8 +74,6 @@ impl LevelsPanel {
             }
         });
 
-        self.color_bar(ui, levels);
-
         ui.add_space(4.0);
         ui.checkbox(&mut levels.auto, "Auto levels")
             .on_hover_text("Track the range of the stored sweeps");
@@ -122,7 +120,13 @@ impl LevelsPanel {
         }
 
         self.rebuild_if_stale(storage);
-        self.histogram(ui, levels, data_range);
+
+        // The strip and the histogram share one dB axis, so a level handle sits
+        // at the same x in both and the window's effect on the colours is read
+        // straight off the strip.
+        let axis = self.axis_range(levels);
+        self.histogram(ui, levels, axis);
+        self.color_bar(ui, levels, axis);
 
         if let Some((lo, hi)) = data_range {
             ui.label(
@@ -135,22 +139,44 @@ impl LevelsPanel {
         outcome
     }
 
-    /// Horizontal strip previewing the active colour map.
-    fn color_bar(&self, ui: &mut egui::Ui, levels: &LevelsConfig) {
+    /// The dB range the strip and the histogram are drawn across.
+    ///
+    /// The union of the data range and the level window, so a window dragged
+    /// outside the data stays visible instead of sliding off the edge.
+    fn axis_range(&self, levels: &LevelsConfig) -> (f32, f32) {
+        let (mut lo, mut hi) = self.range.unwrap_or((levels.low, levels.high));
+        lo = lo.min(levels.low);
+        hi = hi.max(levels.high);
+        if !(hi > lo) {
+            hi = lo + 1.0;
+        }
+        (lo, hi)
+    }
+
+    /// Colour strip along the shared dB axis.
+    ///
+    /// This shows the colour each dB value is *currently* mapped to, not the
+    /// raw colour map: it is flat below `low`, flat above `high`, and ramps
+    /// between, which makes the level window legible at a glance.
+    fn color_bar(&self, ui: &mut egui::Ui, levels: &LevelsConfig, axis: (f32, f32)) {
         let (rect, _) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 14.0), egui::Sense::hover());
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 12.0), egui::Sense::hover());
         if !ui.is_rect_visible(rect) {
             return;
         }
 
         let lut = levels.lut();
         let painter = ui.painter();
-        // One mesh strip per LUT entry would be 256 quads; stepping by pixel is
+        let (lo, hi) = axis;
+        let span = (hi - lo).max(f32::EPSILON);
+        let inv_window = 1.0 / (levels.high - levels.low).max(f32::EPSILON);
+
+        // One quad per LUT entry would be 256 draws; stepping by pixel is
         // cheaper and visually identical.
         let steps = rect.width().round().max(1.0) as usize;
         for i in 0..steps {
-            let t = i as f32 / steps.saturating_sub(1).max(1) as f32;
-            let color = lut_color(lut, t, levels.reverse);
+            let db = lo + span * (i as f32 + 0.5) / steps as f32;
+            let color = lut_color(lut, (db - levels.low) * inv_window, levels.reverse);
             let x0 = rect.left() + rect.width() * i as f32 / steps as f32;
             let x1 = rect.left() + rect.width() * (i + 1) as f32 / steps as f32;
             painter.rect_filled(
@@ -206,10 +232,12 @@ impl LevelsPanel {
         self.built_at = history.counter();
     }
 
-    /// Vertical histogram with the level window drawn over it, the way the
-    /// pyqtgraph widget presented it.
-    fn histogram(&self, ui: &mut egui::Ui, levels: &LevelsConfig, data_range: Option<(f32, f32)>) {
-        let height = 120.0;
+    /// Counts as upright bars along the shared dB axis.
+    ///
+    /// dB runs left to right, matching the colour strip underneath, and the
+    /// level handles are vertical lines at the same x in both.
+    fn histogram(&self, ui: &mut egui::Ui, levels: &LevelsConfig, axis: (f32, f32)) {
+        let height = 110.0;
         let (rect, _) = ui.allocate_exact_size(
             egui::vec2(ui.available_width(), height),
             egui::Sense::hover(),
@@ -232,60 +260,60 @@ impl LevelsPanel {
             return;
         };
 
+        let (axis_lo, axis_hi) = axis;
+        let axis_span = (axis_hi - axis_lo).max(f32::EPSILON);
+        let x_of = |db: f32| rect.left() + rect.width() * ((db - axis_lo) / axis_span);
+
         let peak = self.counts.iter().copied().max().unwrap_or(1).max(1) as f32;
         let span = (hi - lo).max(1e-6);
         let lut = levels.lut();
+        let inv_window = 1.0 / (levels.high - levels.low).max(f32::EPSILON);
 
-        // dB increases upward, so bucket 0 sits at the bottom.
+        // Counts are square-rooted: a spectrum histogram is dominated by the
+        // noise floor, and on a linear scale every signal bucket would be a
+        // single invisible pixel next to it.
+        let bar_w = (rect.width() / BUCKETS as f32).max(1.0);
         for (b, &count) in self.counts.iter().enumerate() {
             if count == 0 {
                 continue;
             }
             let t = b as f32 / (BUCKETS - 1) as f32;
             let db = lo + t * span;
-            let y = rect.bottom() - rect.height() * t;
-            let w = rect.width() * (count as f32 / peak);
+            let x = x_of(db);
+            let h = rect.height() * (count as f32 / peak).sqrt();
 
-            // Colour each bar as the waterfall would colour that value, which
-            // makes the effect of the level window immediately legible.
-            let norm = ((db - levels.low) / (levels.high - levels.low)).clamp(0.0, 1.0);
             painter.rect_filled(
                 egui::Rect::from_min_max(
-                    egui::pos2(rect.left(), y - 1.0),
-                    egui::pos2(rect.left() + w, y),
+                    egui::pos2(x, rect.bottom() - h),
+                    egui::pos2(x + bar_w, rect.bottom()),
                 ),
                 0.0,
-                lut_color(lut, norm, levels.reverse),
+                lut_color(lut, (db - levels.low) * inv_window, levels.reverse),
             );
         }
 
-        // The window edges, positioned in data space so they can sit outside
-        // the histogram when the user has set levels beyond the data range.
-        let line = |v: f32, color: egui::Color32, label: &str| {
-            let t = ((v - lo) / span).clamp(-0.1, 1.1);
-            if !(0.0..=1.0).contains(&t) {
+        // The window edges. Drawn in axis space, which already covers them, so
+        // a window set outside the data is still visible.
+        let edge = ui.visuals().strong_text_color();
+        let handle = |v: f32, label: &str, align: egui::Align2| {
+            let x = x_of(v);
+            if x < rect.left() - 1.0 || x > rect.right() + 1.0 {
                 return;
             }
-            let y = rect.bottom() - rect.height() * t;
             painter.line_segment(
-                [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
-                egui::Stroke::new(1.0, color),
+                [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+                egui::Stroke::new(1.0, edge),
             );
             painter.text(
-                egui::pos2(rect.right() - 2.0, y),
-                egui::Align2::RIGHT_BOTTOM,
+                egui::pos2(x, rect.top() + 1.0),
+                align,
                 label,
                 egui::FontId::proportional(10.0),
-                color,
+                edge,
             );
         };
-        let edge = ui.visuals().strong_text_color();
-        line(levels.high, edge, "max");
-        line(levels.low, edge, "min");
-
-        if let Some((dlo, dhi)) = data_range {
-            let _ = (dlo, dhi);
-        }
+        handle(levels.low, "min", egui::Align2::LEFT_TOP);
+        handle(levels.high, "max", egui::Align2::RIGHT_TOP);
     }
 }
 

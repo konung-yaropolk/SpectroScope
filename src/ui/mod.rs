@@ -8,7 +8,7 @@ pub mod waterfall;
 pub use dialogs::{DialogOutcome, Dialogs};
 pub use levels::{LevelsOutcome, LevelsPanel};
 pub use spectrum::SpectrumPlot;
-pub use waterfall::{Waterfall, WaterfallView};
+pub use waterfall::{Waterfall, WaterfallResponse, WaterfallView};
 
 /// Shared id for the linked x axis of the spectrum and waterfall views, so
 /// panning or zooming either moves both -- the equivalent of the Qt version's

@@ -9,19 +9,9 @@ on first build and nothing needs selecting by hand.
 cargo run --release
 ```
 
-FFTW is on by default. On Windows `fftw-src` fetches a prebuilt
-`libfftw3f-3.dll`; `build.rs` copies it next to the executable, because Cargo
-does not, and without it the binary dies before `main` with
-`STATUS_DLL_NOT_FOUND` (`0xC0000135`). **When you ship a Windows build, ship
-those DLLs alongside the `.exe`.**
-
-To build without FFTW — smaller, no native dependency, `rustfft` instead:
-
-```bash
-cargo run --release --no-default-features
-```
-
-*Help → About* shows which FFT library the running build is using.
+There is no native dependency: the FFT is `rustfft`, so the binary is
+self-contained and the same sources build for every target. *Help → About*
+reports the FFT library the running build uses.
 
 ### Linux dependencies
 
@@ -45,9 +35,7 @@ python -m http.server 8777          # or any static server
 ```
 
 `index.html` loads `pkg/spectroscope.js` and mounts the app on its canvas.
-WebGPU is used when the browser has it and WebGL is the fallback, so the FFTW
-feature is simply ignored for this target and `rustfft` is used — no need to
-pass `--no-default-features`.
+WebGPU is used when the browser has it, and WebGL is the fallback.
 
 A browser cannot open a raw TCP socket, so the `rtl_tcp` backend talks WebSocket
 here and needs a bridge in front of the server, for example:
@@ -69,8 +57,7 @@ rustup target add aarch64-linux-android armv7-linux-androideabi
 cargo apk run --release
 ```
 
-FFTW is excluded for Android, so `rustfft` is used. The helper-process backends
-are compiled out too — nothing there can spawn `soapy_power` — which leaves
+The helper-process backends are compiled out — nothing there can spawn `soapy_power` — which leaves
 `rtl_tcp` and `demo`. The manifest already requests `INTERNET` and declares
 optional USB-host support.
 
@@ -83,7 +70,7 @@ optional USB-host support.
 ## Checks
 
 ```bash
-cargo test                                      # 293 unit tests
+cargo test                                      # 314 unit tests
 cargo clippy --all-targets                      # clean
 cargo fmt --all --check
 cargo check --target wasm32-unknown-unknown

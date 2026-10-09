@@ -1,9 +1,10 @@
-//! The forward complex FFT, behind a trait so the fast library can vary.
+//! The forward complex FFT, behind a trait so the library can vary.
 //!
-//! FFTW is what the original toolchain used -- `pyfftw` inside `soapy_power`,
-//! libfftw in `rtl_power_fftw` -- and it stays the preferred backend wherever it
-//! can be built. `rustfft` is always compiled in and covers wasm32 and Android,
-//! where FFTW is not available at all.
+//! `rustfft` is the implementation. It is pure Rust, so it builds unchanged for
+//! every target including wasm32 and Android, and for the power-of-two sizes
+//! this application plans it is competitive with FFTW. The original toolchain
+//! used FFTW -- `pyfftw` inside `soapy_power`, libfftw in `rtl_power_fftw` --
+//! but only inside those helper processes, which are still free to.
 //!
 //! Both implementations produce the **unnormalised** forward transform, i.e. the
 //! textbook `sum x[m] exp(-2i pi k m / N)` with no `1/N` anywhere. Scaling is
@@ -44,32 +45,16 @@ pub trait Fft: Send {
 
 /// Name of the FFT library this build prefers.
 pub fn backend_name() -> &'static str {
-    #[cfg(use_fftw)]
-    {
-        "FFTW"
-    }
-    #[cfg(not(use_fftw))]
-    {
-        "rustfft"
-    }
+    "rustfft"
 }
 
 /// Plan a forward transform of `len` points.
 ///
-/// Never fails: a length FFTW declines to plan falls back to `rustfft`, and
-/// lengths 0 and 1 need no transform at all.
+/// Never fails: lengths 0 and 1 need no transform at all.
 pub fn plan(len: usize) -> Box<dyn Fft> {
     if len <= 1 {
         return Box::new(Trivial(len));
     }
-
-    #[cfg(use_fftw)]
-    {
-        if let Some(f) = fftw_backend::FftwFft::new(len) {
-            return Box::new(f);
-        }
-    }
-
     Box::new(RustFft::new(len))
 }
 
@@ -155,105 +140,6 @@ impl Fft for RustFft {
 
     fn backend_name(&self) -> &'static str {
         "rustfft"
-    }
-}
-
-// ---------------------------------------------------------------------------
-// FFTW
-// ---------------------------------------------------------------------------
-
-// `use_fftw` is set by build.rs only when the `fftw` feature is on *and* the
-// target can actually build the crate, which is why nothing here keys off the
-// feature directly.
-#[cfg(use_fftw)]
-mod fftw_backend {
-    use std::sync::Mutex;
-
-    use fftw::array::AlignedVec;
-    use fftw::plan::{C2CPlan, C2CPlan32};
-    use fftw::types::{c32, Flag, Sign};
-    use num_complex::Complex;
-
-    use super::{Fft, CACHE_CAPACITY};
-
-    /// FFTW's planner mutates library-global state and is explicitly documented
-    /// as not thread safe, so every plan creation goes through this lock. The
-    /// same lock doubles as the pool of idle plans, which means a size that is
-    /// re-planned repeatedly -- the GUI nudging the bin size -- costs one
-    /// mutex acquisition instead of a planner run.
-    static POOL: Mutex<Vec<(usize, C2CPlan32)>> = Mutex::new(Vec::new());
-
-    pub struct FftwFft {
-        /// `None` only while `Drop` is handing the plan back to the pool.
-        plan: Option<C2CPlan32>,
-        /// FFTW's new-array execute functions insist on the same alignment class
-        /// the plan was created with, so the caller's slice cannot be used
-        /// directly and these two staging buffers are copied through instead.
-        input: AlignedVec<c32>,
-        output: AlignedVec<c32>,
-        len: usize,
-    }
-
-    impl FftwFft {
-        pub fn new(len: usize) -> Option<Self> {
-            let plan = take_or_plan(len)?;
-            Some(Self {
-                plan: Some(plan),
-                input: AlignedVec::new(len),
-                output: AlignedVec::new(len),
-                len,
-            })
-        }
-    }
-
-    fn take_or_plan(len: usize) -> Option<C2CPlan32> {
-        let mut pool = POOL.lock().ok()?;
-        if let Some(pos) = pool.iter().position(|(n, _)| *n == len) {
-            return Some(pool.remove(pos).1);
-        }
-        // ESTIMATE rather than MEASURE: MEASURE times trial transforms, which
-        // would freeze the UI thread for a visible moment every time the bin
-        // size changes, for a few percent of throughput we do not need.
-        C2CPlan32::aligned(&[len], Sign::Forward, Flag::ESTIMATE).ok()
-    }
-
-    impl Fft for FftwFft {
-        fn len(&self) -> usize {
-            self.len
-        }
-
-        fn process(&mut self, buf: &mut [Complex<f32>]) {
-            if self.len == 0 || buf.len() < self.len {
-                return;
-            }
-            let Some(plan) = self.plan.as_mut() else {
-                return;
-            };
-            // `c32` is a re-export of `num_complex::Complex32`, so this is a
-            // plain memcpy and not a reinterpretation.
-            self.input.copy_from_slice(&buf[..self.len]);
-            if plan.c2c(&mut self.input, &mut self.output).is_ok() {
-                buf[..self.len].copy_from_slice(&self.output);
-            }
-        }
-
-        fn backend_name(&self) -> &'static str {
-            "FFTW"
-        }
-    }
-
-    impl Drop for FftwFft {
-        fn drop(&mut self) {
-            let Some(plan) = self.plan.take() else {
-                return;
-            };
-            if let Ok(mut pool) = POOL.lock() {
-                if pool.len() >= CACHE_CAPACITY {
-                    pool.remove(0);
-                }
-                pool.push((self.len, plan));
-            }
-        }
     }
 }
 
@@ -410,38 +296,8 @@ mod tests {
 
     #[test]
     fn backend_name_describes_the_build() {
-        let name = backend_name();
-        assert!(name == "FFTW" || name == "rustfft", "{name}");
-        assert_eq!(plan(0).backend_name(), name);
-        // A planned transform may fall back, so it is only required to name one
-        // of the two real backends.
-        let planned = plan(64).backend_name();
-        assert!(planned == "FFTW" || planned == "rustfft", "{planned}");
-    }
-
-    #[cfg(use_fftw)]
-    #[test]
-    fn fftw_and_rustfft_agree() {
-        let len = 512;
-        let input: Vec<Complex<f32>> = (0..len)
-            .map(|i| {
-                let t = i as f32 * 0.017;
-                c(t.sin() * 0.8 + (3.1 * t).cos() * 0.2, (0.7 * t).sin())
-            })
-            .collect();
-
-        let mut a = input.clone();
-        let Some(mut fftw) = fftw_backend::FftwFft::new(len) else {
-            // Planning can legitimately fail (out of memory); nothing to compare.
-            return;
-        };
-        fftw.process(&mut a);
-
-        let mut b = input;
-        RustFft::new(len).process(&mut b);
-
-        for (k, (x, y)) in a.iter().zip(b.iter()).enumerate() {
-            assert!((x - y).norm() < 1e-2, "bin {k}: {x:?} vs {y:?}");
-        }
+        assert_eq!(backend_name(), "rustfft");
+        assert_eq!(plan(0).backend_name(), "rustfft");
+        assert_eq!(plan(64).backend_name(), "rustfft");
     }
 }

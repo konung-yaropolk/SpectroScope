@@ -27,6 +27,28 @@ const ALIGN_TEXELS: usize = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize / 4;
 /// Height of the left-hand time-axis gutter's tick marks, in points.
 const TICK_LEN: f32 = 5.0;
 
+/// Vertical stretch limits, in screen points per history row.
+const MIN_POINTS_PER_ROW: f64 = 0.05;
+const MAX_POINTS_PER_ROW: f64 = 64.0;
+
+/// Points per row on a fresh view, before any history exists to fit to.
+const DEFAULT_POINTS_PER_ROW: f64 = 2.0;
+
+/// Bounds for the automatic vertical fit.
+///
+/// A fixed scale is wrong for a scrollable history: with 4096 sweeps held and
+/// two points each, the live view would show only the newest few hundred and
+/// creep down a couple of pixels per sweep, which reads as a waterfall that is
+/// not moving at all. Fitting what has been captured to the pane instead means
+/// it is full and visibly scrolling from the first sweeps, and once there is
+/// more history than pixels the scale settles at one row per point and the
+/// image simply scrolls, which is the classic behaviour.
+const AUTO_FIT_MIN_POINTS_PER_ROW: f64 = 1.0;
+const AUTO_FIT_MAX_POINTS_PER_ROW: f64 = 24.0;
+
+/// Scroll wheel notches are ~50 points; this turns one into a ~15% zoom step.
+const ZOOM_PER_POINT: f64 = 0.003;
+
 /// How the GUI wants the history mapped onto the widget this frame.
 #[derive(Clone, Copy, Debug)]
 pub struct WaterfallView {
@@ -40,6 +62,26 @@ pub struct WaterfallView {
     pub view_x: (f64, f64),
     /// Seconds per history row; `0` when no sweep has been timed yet.
     pub row_interval: f64,
+    /// Total sweeps ever appended, from `HistoryBuffer::counter`.
+    ///
+    /// Scrolling anchors to this rather than to an age, so a view scrolled into
+    /// the past stays on the sweeps the user was looking at as new ones arrive.
+    pub counter: u64,
+    /// Points to leave clear on the left for the time axis, so the image starts
+    /// exactly where the spectrum plot's data area does.
+    pub gutter_left: f32,
+    /// Points to leave clear on the right, matching the spectrum plot.
+    pub gutter_right: f32,
+}
+
+/// What the user did to the waterfall this frame.
+pub struct WaterfallResponse {
+    pub response: egui::Response,
+    /// A new frequency range the user asked for by zooming or panning here.
+    ///
+    /// The waterfall does not own the x axis -- the spectrum plot does, and the
+    /// two are linked -- so the request is handed back for the GUI to apply.
+    pub requested_view_x: Option<(f64, f64)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +174,37 @@ fn column_at(at_left: f32, per_uv: f32, uv_x: f32, cols: usize) -> Option<usize>
         return None;
     }
     Some(c as usize)
+}
+
+/// A frequency range zoomed about `pivot` (0 = left edge, 1 = right edge).
+///
+/// Returns `None` for a degenerate range or a zoom that would collapse it, so
+/// a stray scroll cannot leave the plot with an empty or inverted axis.
+fn zoom_range(view_x: (f64, f64), pivot: f64, wheel: f64) -> Option<(f64, f64)> {
+    zoom_by_factor(view_x, pivot, (wheel * ZOOM_PER_POINT).exp())
+}
+
+/// The same zoom expressed as a multiplier, which is the form egui hands over
+/// for a ctrl+wheel or pinch gesture. A factor above 1 zooms *in*, so the
+/// visible span shrinks.
+fn zoom_by_factor(view_x: (f64, f64), pivot: f64, factor: f64) -> Option<(f64, f64)> {
+    let span = view_x.1 - view_x.0;
+    if !(span > 0.0) || !span.is_finite() || !(factor > 0.0) || !factor.is_finite() {
+        return None;
+    }
+    let new_span = span / factor;
+    if !(new_span > 0.0) || !new_span.is_finite() {
+        return None;
+    }
+    let at = view_x.0 + span * pivot;
+    Some((at - new_span * pivot, at + new_span * (1.0 - pivot)))
+}
+
+/// Vertical scale that fits `rows_filled` sweeps into `height` points.
+fn fit_points_per_row(height: f32, rows_filled: usize) -> f64 {
+    let rows = rows_filled.max(1) as f64;
+    let height = height.max(1.0) as f64;
+    (height / rows).clamp(AUTO_FIT_MIN_POINTS_PER_ROW, AUTO_FIT_MAX_POINTS_PER_ROW)
 }
 
 /// Texture width whose row stride is a whole number of alignment units.
@@ -234,13 +307,21 @@ struct Uniforms {
     rows: u32,
     head: u32,
     rows_filled: u32,
+    /// Age in rows of the topmost visible line; fractional while stretched.
+    row_at_top: f32,
+    /// History rows the widget's height spans.
+    rows_span: f32,
+    _pad: [f32; 2],
 }
 
+#[allow(clippy::too_many_arguments)]
 fn uniforms(
     cols: usize,
     rows: usize,
     head: usize,
     rows_filled: usize,
+    row_at_top: f32,
+    rows_span: f32,
     view: &WaterfallView,
     background: egui::Color32,
 ) -> Uniforms {
@@ -265,6 +346,9 @@ fn uniforms(
         rows: rows as u32,
         head: if rows == 0 { 0 } else { (head % rows) as u32 },
         rows_filled: rows_filled.min(rows) as u32,
+        row_at_top,
+        rows_span,
+        _pad: [0.0; 2],
     }
 }
 
@@ -279,6 +363,10 @@ struct Uniforms {
     rows: u32,
     head: u32,
     rows_filled: u32,
+    row_at_top: f32,
+    rows_span: f32,
+    pad0: f32,
+    pad1: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -311,7 +399,10 @@ fn shade(uv: vec2<f32>) -> vec4<f32> {
         return u.background;
     }
 
-    let screen_row = i32(floor(uv.y * f32(u.rows)));
+    // Vertical scroll and stretch live entirely here: `row_at_top` is how far
+    // back in the history the top edge sits, and `rows_span` how many rows the
+    // widget height covers.
+    let screen_row = i32(floor(u.row_at_top + uv.y * u.rows_span));
     if screen_row < 0 || screen_row >= i32(u.rows_filled) {
         return u.background;
     }
@@ -715,6 +806,8 @@ struct CpuKey {
     height: usize,
     head: usize,
     rows_filled: usize,
+    row_at_top: u32,
+    rows_span: u32,
     low: u32,
     high: u32,
     at_left: u32,
@@ -749,6 +842,19 @@ pub struct Waterfall {
     /// Reused so a sweep never allocates.
     scratch: Vec<f32>,
     cpu: Cpu,
+
+    /// Screen points one history row occupies vertically.
+    points_per_row: f64,
+    /// Sweep counter of the topmost visible row, or `None` to track the newest.
+    ///
+    /// Anchoring to an absolute sweep rather than an age is what keeps a
+    /// scrolled-back view pinned to the same sweeps while new ones arrive.
+    anchor: Option<u64>,
+    /// Keep the vertical scale fitted to the captured history.
+    ///
+    /// Cleared as soon as the user stretches or scrolls, because from then on
+    /// the scale is theirs and refitting under them would fight the gesture.
+    auto_fit: bool,
 }
 
 impl Waterfall {
@@ -766,7 +872,23 @@ impl Waterfall {
             rows: 0,
             scratch: Vec::new(),
             cpu: Cpu::default(),
+            points_per_row: DEFAULT_POINTS_PER_ROW,
+            anchor: None,
+            auto_fit: true,
         }
+    }
+
+    /// Scroll back to the newest sweep and restore the default stretch.
+    pub fn reset_view(&mut self) {
+        self.points_per_row = DEFAULT_POINTS_PER_ROW;
+        self.anchor = None;
+        self.auto_fit = true;
+        self.cpu.dirty = true;
+    }
+
+    /// True while the view is pinned to the newest sweep.
+    pub fn is_following(&self) -> bool {
+        self.anchor.is_none()
     }
 
     pub fn is_gpu(&self) -> bool {
@@ -904,35 +1026,253 @@ impl Waterfall {
         head: usize,
         rows_filled: usize,
         view: &WaterfallView,
-    ) -> egui::Response {
-        let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
+    ) -> WaterfallResponse {
+        let (rect, response) =
+            ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
+        let mut out = WaterfallResponse {
+            response,
+            requested_view_x: None,
+        };
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
-            return response;
+            return out;
         }
 
+        // The image occupies exactly the columns the spectrum plot data area
+        // does, so the two are registered to the pixel; the left gutter carries
+        // the time axis, mirroring the plot y-axis labels above.
+        let image_rect = egui::Rect::from_min_max(
+            egui::pos2(rect.left() + view.gutter_left.max(0.0), rect.top()),
+            egui::pos2(rect.right() - view.gutter_right.max(0.0), rect.bottom()),
+        );
+        if image_rect.width() <= 0.0 {
+            return out;
+        }
+
+        let rows_filled = rows_filled.min(self.rows);
+        self.handle_input(ui, &mut out, image_rect, rows_filled, view);
+
+        if self.auto_fit {
+            self.points_per_row = fit_points_per_row(image_rect.height(), rows_filled);
+        }
+
+        let (row_at_top, rows_span) = self.window(image_rect.height(), rows_filled, view.counter);
+
         let background = ui.visuals().extreme_bg_color;
+        ui.painter().rect_filled(rect, 0.0, background);
+
         if self.gpu.is_some() {
-            let u = uniforms(self.cols, self.rows, head, rows_filled, view, background);
+            let u = uniforms(
+                self.cols,
+                self.rows,
+                head,
+                rows_filled,
+                row_at_top as f32,
+                rows_span as f32,
+                view,
+                background,
+            );
             ui.painter().add(egui_wgpu::Callback::new_paint_callback(
-                rect,
+                image_rect,
                 WaterfallCallback { uniforms: u },
             ));
         } else {
-            self.paint_cpu(ui, rect, head, rows_filled, view, background);
+            self.paint_cpu(
+                ui,
+                image_rect,
+                head,
+                rows_filled,
+                row_at_top,
+                rows_span,
+                view,
+                background,
+            );
         }
 
-        self.draw_time_axis(ui, rect, view.row_interval);
-        response
+        self.draw_time_axis(
+            ui,
+            rect,
+            image_rect,
+            row_at_top,
+            rows_span,
+            view.row_interval,
+        );
+        self.draw_hold_badge(ui, image_rect, row_at_top, view.row_interval);
+        out
+    }
+
+    /// Say so when the view is no longer showing live sweeps.
+    ///
+    /// Without this a scrolled-back waterfall looks like a stalled one, which
+    /// is the obvious way to lose a user who nudged the wheel by accident.
+    fn draw_hold_badge(
+        &self,
+        ui: &egui::Ui,
+        image_rect: egui::Rect,
+        row_at_top: f64,
+        row_interval: f64,
+    ) {
+        if self.is_following() || row_at_top < 0.5 {
+            return;
+        }
+
+        let label = if row_interval > 0.0 && row_interval.is_finite() {
+            format!("history -{}", format_age(row_at_top * row_interval, false))
+        } else {
+            format!("history -{} sweeps", row_at_top.round() as u64)
+        };
+
+        let painter = ui.painter_at(image_rect);
+        let font = egui::FontId::proportional(11.0);
+        let galley = painter.layout_no_wrap(label, font, egui::Color32::WHITE);
+        let pos = egui::pos2(image_rect.left() + 6.0, image_rect.top() + 6.0);
+        painter.rect_filled(
+            egui::Rect::from_min_size(pos, galley.size()).expand(4.0),
+            3.0,
+            egui::Color32::from_black_alpha(170),
+        );
+        painter.galley(pos, galley, egui::Color32::WHITE);
+    }
+
+    /// The visible slice of history: the age of the top row, and rows spanned.
+    fn window(&self, height: f32, rows_filled: usize, counter: u64) -> (f64, f64) {
+        let rows_span = (height as f64 / self.points_per_row).max(1.0);
+        let row_at_top = match self.anchor {
+            None => 0.0,
+            Some(anchor) => {
+                let age = counter.saturating_sub(anchor) as f64;
+                // Never scroll past the oldest sweep still held.
+                let max_age = (rows_filled as f64 - rows_span).max(0.0);
+                age.clamp(0.0, max_age)
+            }
+        };
+        (row_at_top, rows_span)
+    }
+
+    /// Scroll, stretch, zoom and pan.
+    fn handle_input(
+        &mut self,
+        ui: &egui::Ui,
+        out: &mut WaterfallResponse,
+        image_rect: egui::Rect,
+        rows_filled: usize,
+        view: &WaterfallView,
+    ) {
+        let hovered = out
+            .response
+            .hover_pos()
+            .is_some_and(|p| image_rect.contains(p));
+
+        let (scroll, zoom_delta, modifiers, pointer) = ui.input(|i| {
+            (
+                i.raw_scroll_delta,
+                i.zoom_delta(),
+                i.modifiers,
+                i.pointer.hover_pos(),
+            )
+        });
+
+        // egui reports shift+wheel as horizontal scrolling on most platforms,
+        // so take whichever axis actually moved rather than trusting y.
+        let wheel = if scroll.y != 0.0 { scroll.y } else { scroll.x };
+
+        let rows_span = (image_rect.height() as f64 / self.points_per_row).max(1.0);
+        let pivot = || {
+            pointer
+                .map(|p| ((p.x - image_rect.left()) / image_rect.width()) as f64)
+                .unwrap_or(0.5)
+                .clamp(0.0, 1.0)
+        };
+
+        // ctrl+wheel never arrives as a scroll: egui turns it into a zoom
+        // gesture, which is also what a trackpad pinch produces. The modifier
+        // branch below is the fallback for platforms that do pass it through.
+        if hovered && (zoom_delta - 1.0).abs() > f32::EPSILON {
+            out.requested_view_x = zoom_by_factor(view.view_x, pivot(), zoom_delta as f64);
+        } else if hovered && wheel != 0.0 {
+            if modifiers.command || modifiers.ctrl {
+                // Horizontal zoom about the pointer, so the frequency under the
+                // cursor stays put.
+                out.requested_view_x = zoom_range(view.view_x, pivot(), wheel as f64);
+            } else if modifiers.shift {
+                let factor = (-wheel as f64 * ZOOM_PER_POINT).exp();
+                self.set_points_per_row(self.points_per_row * factor, rows_filled, view.counter);
+            } else {
+                // Wheel up goes back in time.
+                let delta_rows = wheel as f64 / self.points_per_row;
+                self.scroll_by(-delta_rows, rows_span, rows_filled, view.counter);
+            }
+        }
+
+        if out.response.dragged() {
+            let drag = out.response.drag_delta();
+            if drag.y != 0.0 {
+                self.scroll_by(
+                    -(drag.y as f64) / self.points_per_row,
+                    rows_span,
+                    rows_filled,
+                    view.counter,
+                );
+            }
+            if drag.x != 0.0 {
+                let span = view.view_x.1 - view.view_x.0;
+                if span > 0.0 && span.is_finite() {
+                    let shift = -(drag.x as f64) / image_rect.width() as f64 * span;
+                    out.requested_view_x = Some((view.view_x.0 + shift, view.view_x.1 + shift));
+                }
+            }
+        }
+
+        if out.response.double_clicked() {
+            self.reset_view();
+        }
+    }
+
+    fn set_points_per_row(&mut self, value: f64, rows_filled: usize, counter: u64) {
+        let value = value.clamp(MIN_POINTS_PER_ROW, MAX_POINTS_PER_ROW);
+        if (value - self.points_per_row).abs() < f64::EPSILON {
+            return;
+        }
+        self.points_per_row = value;
+        self.auto_fit = false;
+        self.cpu.dirty = true;
+        // Stretching can bring the bottom of the view past the oldest sweep.
+        if self.anchor.is_some() {
+            self.scroll_by(0.0, 0.0, rows_filled, counter);
+        }
+    }
+
+    /// Move the view `delta_rows` further into the past.
+    fn scroll_by(&mut self, delta_rows: f64, rows_span: f64, rows_filled: usize, counter: u64) {
+        let current = match self.anchor {
+            None => 0.0,
+            Some(a) => counter.saturating_sub(a) as f64,
+        };
+        let max_age = (rows_filled as f64 - rows_span).max(0.0);
+        let age = (current + delta_rows).clamp(0.0, max_age);
+
+        self.cpu.dirty = true;
+        // Snapping back to the top resumes following, so the live view keeps up
+        // with new sweeps instead of drifting away from them.
+        if age < 0.5 {
+            self.anchor = None;
+        } else {
+            self.anchor = Some(counter.saturating_sub(age.round() as u64));
+            // Hold the scale while the user is reading back through history.
+            self.auto_fit = false;
+        }
     }
 
     // -- CPU fallback -------------------------------------------------------
 
+    #[allow(clippy::too_many_arguments)]
     fn paint_cpu(
         &mut self,
         ui: &egui::Ui,
         rect: egui::Rect,
         head: usize,
         rows_filled: usize,
+        row_at_top: f64,
+        rows_span: f64,
         view: &WaterfallView,
         background: egui::Color32,
     ) {
@@ -948,17 +1288,19 @@ impl Waterfall {
             return;
         }
 
-        // One image pixel per screen pixel horizontally, one per history row
-        // vertically, so the result matches what the shader would draw.
+        // One image pixel per screen pixel both ways, so the result matches
+        // what the shader would draw at the current stretch.
         let ppp = ui.ctx().pixels_per_point().max(0.1);
         let width = ((rect.width() * ppp).round() as usize).clamp(1, 4096);
-        let height = self.rows.clamp(1, 2048);
+        let height = ((rect.height() * ppp).round() as usize).clamp(1, 4096);
 
         let key = CpuKey {
             width,
             height,
             head,
             rows_filled,
+            row_at_top: (row_at_top * 16.0).round() as u32,
+            rows_span: (rows_span * 16.0).round() as u32,
             low: view.low.to_bits(),
             high: view.high.to_bits(),
             at_left: at_left.to_bits(),
@@ -967,7 +1309,16 @@ impl Waterfall {
         };
 
         if self.cpu.dirty || self.cpu.key != Some(key) {
-            let image = self.cpu_image(width, height, head, rows_filled, view, background);
+            let image = self.cpu_image(
+                width,
+                height,
+                head,
+                rows_filled,
+                row_at_top,
+                rows_span,
+                view,
+                background,
+            );
             match &mut self.cpu.texture {
                 Some(tex) => tex.set(image, egui::TextureOptions::NEAREST),
                 None => {
@@ -992,12 +1343,15 @@ impl Waterfall {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn cpu_image(
         &self,
         width: usize,
         height: usize,
         head: usize,
         rows_filled: usize,
+        row_at_top: f64,
+        rows_span: f64,
         view: &WaterfallView,
         background: egui::Color32,
     ) -> egui::ColorImage {
@@ -1015,9 +1369,13 @@ impl Waterfall {
 
         let mut pixels = vec![background; width * height];
         for y in 0..height {
-            // `height` is capped, so several history rows can share a line.
-            let screen_row = y * self.rows / height;
-            let Some(ring) = ring_row(head, self.rows, rows_filled, screen_row) else {
+            // Same mapping the shader uses, so both paths agree while the view
+            // is scrolled or stretched.
+            let age = row_at_top + (y as f64 + 0.5) / height as f64 * rows_span;
+            if age < 0.0 {
+                continue;
+            }
+            let Some(ring) = ring_row(head, self.rows, rows_filled, age as usize) else {
                 continue;
             };
             let base = ring * self.cols;
@@ -1036,14 +1394,30 @@ impl Waterfall {
 
     // -- Time axis ----------------------------------------------------------
 
-    /// Seconds into the past down the left edge. The frequency axis belongs to
-    /// the spectrum plot above, so nothing else is drawn.
-    fn draw_time_axis(&self, ui: &egui::Ui, rect: egui::Rect, row_interval: f64) {
+    /// Seconds into the past down the left gutter.
+    ///
+    /// The gutter is the strip the spectrum plot uses for its y-axis labels, so
+    /// the labels sit beside the image instead of on top of it. The frequency
+    /// axis belongs to the plot above, so nothing else is drawn.
+    fn draw_time_axis(
+        &self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        image_rect: egui::Rect,
+        row_at_top: f64,
+        rows_span: f64,
+        row_interval: f64,
+    ) {
         if self.rows == 0 || !(row_interval > 0.0) || !row_interval.is_finite() {
             return;
         }
-        let total = self.rows as f64 * row_interval;
-        let step = nice_time_step(total, 6);
+        if !(rows_span > 0.0) || image_rect.height() <= 0.0 {
+            return;
+        }
+
+        let top_age_s = row_at_top * row_interval;
+        let visible_s = rows_span * row_interval;
+        let step = nice_time_step(visible_s, 6);
         if step <= 0.0 {
             return;
         }
@@ -1052,27 +1426,30 @@ impl Waterfall {
         let color = ui.visuals().weak_text_color();
         let font = egui::FontId::proportional(10.0);
         let stroke = egui::Stroke::new(1.0, color);
+        let sub_second = step < 1.0;
 
-        let mut t = step;
-        while t <= total {
-            let y = rect.top() + (t / total) as f32 * rect.height();
+        // Start at the first whole step at or below the top of the view.
+        let first = (top_age_s / step).ceil() * step;
+        let mut t = first;
+        while t <= top_age_s + visible_s {
+            let frac = (t - top_age_s) / visible_s;
+            let y = image_rect.top() + frac as f32 * image_rect.height();
             painter.line_segment(
                 [
-                    egui::pos2(rect.left(), y),
-                    egui::pos2(rect.left() + TICK_LEN, y),
+                    egui::pos2(image_rect.left() - TICK_LEN, y),
+                    egui::pos2(image_rect.left(), y),
                 ],
                 stroke,
             );
 
-            let galley = painter.layout_no_wrap(format_age(t, step < 1.0), font.clone(), color);
-            let pos = egui::pos2(rect.left() + TICK_LEN + 3.0, y - galley.size().y * 0.5);
-            // The label sits over the image, so give it something to read on.
-            painter.rect_filled(
-                egui::Rect::from_min_size(pos, galley.size()).expand(2.0),
-                2.0,
-                egui::Color32::from_black_alpha(140),
+            let galley = painter.layout_no_wrap(format_age(t, sub_second), font.clone(), color);
+            let pos = egui::pos2(
+                image_rect.left() - TICK_LEN - 2.0 - galley.size().x,
+                y - galley.size().y * 0.5,
             );
-            painter.galley(pos, galley, color);
+            if pos.x >= rect.left() {
+                painter.galley(pos, galley, color);
+            }
 
             t += step;
         }
@@ -1135,6 +1512,9 @@ mod tests {
             rows: 0,
             scratch: Vec::new(),
             cpu: Cpu::default(),
+            points_per_row: DEFAULT_POINTS_PER_ROW,
+            anchor: None,
+            auto_fit: true,
         };
 
         w.set_colormap(&GREY, false);
@@ -1318,7 +1698,7 @@ mod tests {
     #[test]
     fn uniform_block_respects_wgsl_alignment() {
         assert_eq!(std::mem::size_of::<Uniforms>() % 16, 0);
-        assert_eq!(std::mem::size_of::<Uniforms>(), 48);
+        assert_eq!(std::mem::size_of::<Uniforms>(), 64);
         assert_eq!(std::mem::align_of::<Uniforms>(), 4);
     }
 
@@ -1329,12 +1709,15 @@ mod tests {
             data_x: (100e6, 200e6),
             view_x: (100e6, 200e6),
             row_interval: 1.0,
+            counter: 0,
+            gutter_left: 0.0,
+            gutter_right: 0.0,
         }
     }
 
     #[test]
     fn uniforms_reduce_the_head_and_clamp_the_fill() {
-        let u = uniforms(101, 8, 11, 99, &view(), egui::Color32::BLACK);
+        let u = uniforms(101, 8, 11, 99, 0.0, 8_f32, &view(), egui::Color32::BLACK);
         assert_eq!(u.head, 3);
         assert_eq!(u.rows_filled, 8);
         assert_eq!(u.cols, 101);
@@ -1345,12 +1728,175 @@ mod tests {
     fn unmappable_view_reports_no_columns() {
         let mut v = view();
         v.view_x = (150e6, 150e6);
-        assert_eq!(uniforms(101, 8, 0, 8, &v, egui::Color32::BLACK).cols, 0);
+        assert_eq!(
+            uniforms(101, 8, 0, 8, 0.0, 8_f32, &v, egui::Color32::BLACK).cols,
+            0
+        );
 
         // Zero rows must not divide by zero while reducing the head.
-        let u = uniforms(101, 0, 7, 7, &view(), egui::Color32::BLACK);
+        let u = uniforms(101, 0, 7, 7, 0.0, 0 as f32, &view(), egui::Color32::BLACK);
         assert_eq!(u.head, 0);
         assert_eq!(u.rows_filled, 0);
+    }
+
+    // -- navigation ---------------------------------------------------------
+
+    fn nav_waterfall(rows: usize) -> Waterfall {
+        let mut w = cpu_waterfall(4, rows);
+        w.points_per_row = 1.0;
+        w
+    }
+
+    #[test]
+    fn the_fit_fills_the_pane_from_the_first_sweeps() {
+        // A handful of sweeps are stretched to fill the height rather than
+        // leaving the pane almost empty.
+        assert_eq!(fit_points_per_row(400.0, 20), 20.0);
+        // ...but not beyond legibility.
+        assert_eq!(fit_points_per_row(400.0, 1), AUTO_FIT_MAX_POINTS_PER_ROW);
+        // Once the history outgrows the pane the scale settles and the image
+        // scrolls instead of shrinking away.
+        assert_eq!(fit_points_per_row(400.0, 400), 1.0);
+        assert_eq!(fit_points_per_row(400.0, 4096), AUTO_FIT_MIN_POINTS_PER_ROW);
+        // Degenerate geometry must not divide by zero.
+        assert!(fit_points_per_row(0.0, 0).is_finite());
+    }
+
+    #[test]
+    fn a_fit_view_fills_the_height_whatever_the_history() {
+        let mut w = nav_waterfall(4096);
+        for rows in [1usize, 5, 50, 400, 4096] {
+            w.points_per_row = fit_points_per_row(400.0, rows);
+            let (_, span) = w.window(400.0, rows, 0);
+            let covered = span.min(rows as f64) * w.points_per_row;
+            assert!(
+                covered >= 400.0 - 1.0 || rows as f64 * AUTO_FIT_MAX_POINTS_PER_ROW < 400.0,
+                "{rows} rows covered only {covered} of 400 points"
+            );
+        }
+    }
+
+    #[test]
+    fn stretching_or_scrolling_takes_the_scale_off_auto() {
+        let mut w = nav_waterfall(1000);
+        assert!(w.auto_fit);
+        w.set_points_per_row(8.0, 1000, 0);
+        assert!(!w.auto_fit, "a manual stretch must stop the refit");
+
+        w.reset_view();
+        assert!(w.auto_fit);
+        w.scroll_by(20.0, 50.0, 1000, 1_000);
+        assert!(!w.auto_fit, "scrolling into history must hold the scale");
+
+        // Returning to the live edge does not by itself resume fitting; only
+        // an explicit reset does, so the scale stays predictable.
+        w.reset_view();
+        assert!(w.auto_fit && w.is_following());
+    }
+
+    #[test]
+    fn a_fresh_view_follows_the_newest_sweep() {
+        let w = nav_waterfall(100);
+        assert!(w.is_following());
+        let (top, span) = w.window(50.0, 100, 1_000);
+        assert_eq!(top, 0.0);
+        assert_eq!(span, 50.0);
+    }
+
+    #[test]
+    fn scrolling_back_anchors_to_an_absolute_sweep() {
+        let mut w = nav_waterfall(100);
+        // 50 visible rows out of 100 held: 50 rows of slack.
+        w.scroll_by(20.0, 50.0, 100, 1_000);
+        assert!(!w.is_following());
+        assert_eq!(w.window(50.0, 100, 1_000).0, 20.0);
+
+        // Ten more sweeps arrive; the view must stay on the same sweeps, which
+        // means its age grows rather than the content sliding under it.
+        assert_eq!(w.window(50.0, 100, 1_010).0, 30.0);
+    }
+
+    #[test]
+    fn scrolling_stops_at_the_oldest_sweep_held() {
+        let mut w = nav_waterfall(100);
+        w.scroll_by(10_000.0, 50.0, 100, 1_000);
+        // 100 held minus 50 visible.
+        assert_eq!(w.window(50.0, 100, 1_000).0, 50.0);
+    }
+
+    #[test]
+    fn scrolling_back_to_the_top_resumes_following() {
+        let mut w = nav_waterfall(100);
+        w.scroll_by(20.0, 50.0, 100, 1_000);
+        assert!(!w.is_following());
+        w.scroll_by(-20.0, 50.0, 100, 1_000);
+        assert!(w.is_following(), "must re-pin to the live edge");
+        assert_eq!(w.window(50.0, 100, 1_100).0, 0.0);
+    }
+
+    #[test]
+    fn a_history_shorter_than_the_view_cannot_scroll() {
+        let mut w = nav_waterfall(100);
+        w.scroll_by(30.0, 50.0, 10, 1_000);
+        assert_eq!(w.window(50.0, 10, 1_000).0, 0.0);
+    }
+
+    #[test]
+    fn vertical_stretch_changes_the_rows_covered_and_is_bounded() {
+        let mut w = nav_waterfall(1_000);
+        assert_eq!(w.window(100.0, 1_000, 0).1, 100.0);
+
+        w.set_points_per_row(4.0, 1_000, 0);
+        assert_eq!(w.window(100.0, 1_000, 0).1, 25.0);
+
+        w.set_points_per_row(1e9, 1_000, 0);
+        assert_eq!(w.points_per_row, MAX_POINTS_PER_ROW);
+        w.set_points_per_row(0.0, 1_000, 0);
+        assert_eq!(w.points_per_row, MIN_POINTS_PER_ROW);
+    }
+
+    #[test]
+    fn reset_view_returns_to_the_live_default() {
+        let mut w = nav_waterfall(100);
+        w.scroll_by(20.0, 10.0, 100, 1_000);
+        w.set_points_per_row(16.0, 100, 1_000);
+        w.reset_view();
+        assert!(w.is_following());
+        assert_eq!(w.points_per_row, DEFAULT_POINTS_PER_ROW);
+    }
+
+    #[test]
+    fn a_window_taller_than_one_row_never_collapses() {
+        let w = nav_waterfall(4);
+        // A zero-height widget must still report a usable span.
+        assert_eq!(w.window(0.0, 4, 0).1, 1.0);
+    }
+
+    #[test]
+    fn zoom_keeps_the_pivot_frequency_under_the_cursor() {
+        let view = (100e6, 200e6);
+        for pivot in [0.0, 0.25, 0.5, 1.0] {
+            let at = view.0 + (view.1 - view.0) * pivot;
+            let (a, b) = zoom_range(view, pivot, 50.0).expect("zoom in");
+            let new_at = a + (b - a) * pivot;
+            assert!((new_at - at).abs() < 1.0, "pivot {pivot} moved to {new_at}");
+            assert!(b - a < view.1 - view.0, "wheel up should zoom in");
+        }
+    }
+
+    #[test]
+    fn zoom_out_widens_the_range() {
+        let (a, b) = zoom_range((100e6, 200e6), 0.5, -50.0).expect("zoom out");
+        assert!(b - a > 100e6);
+    }
+
+    #[test]
+    fn zoom_refuses_a_degenerate_range() {
+        assert!(zoom_range((100e6, 100e6), 0.5, 50.0).is_none());
+        assert!(zoom_range((200e6, 100e6), 0.5, 50.0).is_none());
+        assert!(zoom_range((f64::NAN, 100e6), 0.5, 50.0).is_none());
+        // An absurd wheel value must not produce an empty or infinite span.
+        assert!(zoom_range((100e6, 200e6), 0.5, 1e9).is_none());
     }
 
     // -- time axis ----------------------------------------------------------
@@ -1407,7 +1953,7 @@ mod tests {
         w.push_row(2, &[-20.0; 4]);
 
         // head = 0 after three appends into a three-row ring.
-        let img = w.cpu_image(4, 3, 0, 3, &view(), egui::Color32::BLACK);
+        let img = w.cpu_image(4, 3, 0, 3, 0.0, 3_f64, &view(), egui::Color32::BLACK);
         assert_eq!(img.size, [4, 3]);
         assert_eq!(img.pixels[0], egui::Color32::from_rgb(255, 255, 255));
         assert_eq!(img.pixels[4], egui::Color32::from_rgb(128, 128, 128));
@@ -1420,7 +1966,7 @@ mod tests {
         w.push_row(0, &[-20.0, -20.0]);
 
         let bg = egui::Color32::from_rgb(1, 2, 3);
-        let img = w.cpu_image(2, 4, 1, 1, &view(), bg);
+        let img = w.cpu_image(2, 4, 1, 1, 0.0, 4_f64, &view(), bg);
         assert_eq!(img.pixels[0], egui::Color32::from_rgb(255, 255, 255));
         for p in &img.pixels[2..] {
             assert_eq!(*p, bg, "stale row leaked into the image");
@@ -1436,7 +1982,7 @@ mod tests {
         v.data_x = (100e6, 102e6);
         v.view_x = (98e6, 104e6);
         let bg = egui::Color32::from_rgb(1, 2, 3);
-        let img = w.cpu_image(6, 1, 1, 1, &v, bg);
+        let img = w.cpu_image(6, 1, 1, 1, 0.0, 1_f64, &v, bg);
         assert_eq!(img.pixels[0], bg);
         assert_eq!(img.pixels[5], bg);
         assert!(img.pixels[2..4].iter().all(|p| *p != bg));
@@ -1450,7 +1996,7 @@ mod tests {
         let mut v = view();
         v.low = -50.0;
         v.high = -50.0;
-        let img = w.cpu_image(2, 1, 1, 1, &v, egui::Color32::BLACK);
+        let img = w.cpu_image(2, 1, 1, 1, 0.0, 1_f64, &v, egui::Color32::BLACK);
         assert_eq!(img.pixels[0], egui::Color32::from_rgb(0, 0, 0));
     }
 
@@ -1479,7 +2025,16 @@ mod tests {
         assert_eq!(w.cols(), 3);
         assert_eq!(w.rows(), 5);
 
-        let img = w.cpu_image(3, 5, h.head(), h.len(), &view(), egui::Color32::BLACK);
+        let img = w.cpu_image(
+            3,
+            5,
+            h.head(),
+            h.len(),
+            0.0,
+            5_f64,
+            &view(),
+            egui::Color32::BLACK,
+        );
         assert_eq!(img.pixels[0], egui::Color32::from_rgb(255, 255, 255));
         assert_eq!(img.pixels[1], egui::Color32::from_rgb(128, 128, 128));
         assert_eq!(img.pixels[2], egui::Color32::from_rgb(0, 0, 0));

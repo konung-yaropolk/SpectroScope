@@ -298,11 +298,12 @@ impl Dialogs {
                 ui.label("");
                 ui.end_row();
 
-                ui.label("Waterfall history size:");
+                ui.label("Waterfall history size:")
+                    .on_hover_text("Sweeps kept for scrolling back. Costs bins x size x 4 bytes.");
                 ui.add(
                     egui::DragValue::new(&mut self.draft.waterfall_history_size)
                         .speed(1.0)
-                        .range(1..=20_000),
+                        .range(1..=16_384),
                 );
                 ui.label("");
                 ui.end_row();

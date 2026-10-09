@@ -27,7 +27,7 @@ their output formats unchanged.
 
 **`rtl_tcp` is new.** It speaks the rtl_tcp protocol directly: it hops the tuner
 itself, reads raw IQ, and computes the PSD in-process with Welch averaging over
-FFTW (or rustfft). Set *Device* to `host:port` (default port 1234). In the
+`rustfft`. Set *Device* to `host:port` (default port 1234). In the
 browser a raw TCP socket is impossible, so the web build talks WebSocket and
 needs a WebSocket-to-TCP bridge in front of the server; the backend says so in
 the log when it starts.
@@ -44,6 +44,36 @@ you are handed, and add the type to `registry()`. The GUI picks up the new
 backend's name, its parameter limits and its defaults automatically — there is
 nothing to change in the UI. The module documentation walks through a complete
 minimal example.
+
+## Using the display
+
+The spectrum and the waterfall share one frequency axis and are aligned to the
+pixel, so a feature lines up vertically between them.
+
+| Gesture | Effect |
+|---|---|
+| drag on the spectrum | pan both views |
+| scroll on the waterfall | move back and forth through history |
+| **shift** + scroll on the waterfall | stretch time vertically |
+| **ctrl** + scroll on the waterfall | zoom the frequency axis about the cursor |
+| drag on the waterfall | pan frequency and time together |
+| double-click the waterfall | back to live, default scale |
+| *Reset view* | fit the spectrum to the sweep and return the waterfall to live |
+
+The vertical scale fits whatever has been captured to the pane, so the
+waterfall is full and visibly scrolling from the first sweeps rather than
+creeping down a couple of pixels at a time; once there is more history than
+pixels it settles at one sweep per row and simply scrolls. Stretching or
+scrolling hands the scale to you, and *Reset view* hands it back.
+
+Scrolled away from the newest sweep, the waterfall shows a `history -N s` badge
+so a paused-looking display is never mistaken for a stalled one.
+
+The waterfall keeps 4096 sweeps by default -- over an hour at one sweep a
+second -- and *Settings* raises that to 16384. The history is also capped by
+memory, since the cost is `bins x sweeps x 4` bytes and a very wide sweep would
+otherwise ask for gigabytes; the row count is reduced to fit and the reduction
+is logged.
 
 ## Performance notes
 
@@ -64,7 +94,14 @@ that changed:
   from actually changed.
 
 Colour maps are the baked matplotlib family (magma, plasma, inferno, viridis)
-plus turbo, bone and summer.
+plus turbo, bone and summer. The *Levels* histogram and the colour strip below
+it share one dB axis, so the level handles line up on both and the strip shows
+the colour each value currently maps to.
+
+The FFT is `rustfft`. The original toolchain used FFTW, but only inside the
+helper processes it drove; nothing here has to match it, and a pure-Rust
+transform builds unchanged for wasm and Android and performs comparably at the
+power-of-two sizes this application plans.
 
 ## Deliberate differences from the Python version
 

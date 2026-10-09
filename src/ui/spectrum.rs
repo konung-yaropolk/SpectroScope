@@ -61,6 +61,12 @@ pub struct SpectrumPlot {
     /// whatever window was left over -- including from a completely different
     /// frequency range.
     reset_view: bool,
+    /// Screen rectangle of the plot data area, excluding the axis labels.
+    ///
+    /// The waterfall aligns its image to exactly these columns.
+    pub plot_rect: Option<egui::Rect>,
+    /// An x range requested from outside, e.g. by zooming the waterfall.
+    pending_x: Option<(f64, f64)>,
     /// Axis ranges to install on the next frame, computed from the full sweep.
     ///
     /// `set_auto_bounds` alone cannot do this job: decimation clips the cached
@@ -75,6 +81,18 @@ impl SpectrumPlot {
             last_width_px: 1024.0,
             reset_view: true,
             ..Default::default()
+        }
+    }
+
+    /// Fit the axes to the whole sweep on the next frame.
+    pub fn request_refit(&mut self) {
+        self.reset_view = true;
+    }
+
+    /// Adopt an x range chosen elsewhere, keeping the current y range.
+    pub fn set_view_x(&mut self, x0: f64, x1: f64) {
+        if x1 > x0 && x0.is_finite() && x1.is_finite() {
+            self.pending_x = Some((x0, x1));
         }
     }
 
@@ -229,6 +247,7 @@ impl SpectrumPlot {
         if refit.is_some() {
             self.reset_view = false;
         }
+        let pending_x = self.pending_x.take();
 
         let response = Plot::new("spectroscope.spectrum")
             .height(height)
@@ -247,6 +266,14 @@ impl SpectrumPlot {
             .show(ui, |pu| {
                 if let Some([x0, y0, x1, y1]) = refit {
                     pu.set_plot_bounds(egui_plot::PlotBounds::from_min_max([x0, y0], [x1, y1]));
+                } else if let Some((x0, x1)) = pending_x {
+                    // Only the horizontal range is adopted; the vertical one is
+                    // whatever the user or the last refit left in place.
+                    let b = pu.plot_bounds();
+                    pu.set_plot_bounds(egui_plot::PlotBounds::from_min_max(
+                        [x0, b.min()[1]],
+                        [x1, b.max()[1]],
+                    ));
                 }
 
                 // Draw order mirrors the Qt z-values: baseline at the back,
@@ -334,6 +361,7 @@ impl SpectrumPlot {
 
         let (vx0, vx1) = response.inner;
         self.view_x = (vx0, vx1);
+        self.plot_rect = Some(*response.transform.frame());
 
         let width = response.response.rect.width().max(1.0);
         // Re-decimate when the view moved by more than a pixel's worth, or the
