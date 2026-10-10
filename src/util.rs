@@ -71,6 +71,38 @@ pub fn format_hz(hz: f64) -> String {
     }
 }
 
+/// `YYYY-MM-DD`, `HH:MM:SS` from a unix timestamp, in UTC.
+///
+/// Hand-rolled because a date crate would be the project's only dependency
+/// added purely for formatting, and this is the whole of what is needed: a
+/// civil date from a unix second count, proleptic Gregorian, no zones, no
+/// leap seconds. The algorithm is Howard Hinnant's `civil_from_days`.
+pub fn unix_to_civil(timestamp: f64) -> (String, String) {
+    let secs = if timestamp.is_finite() {
+        timestamp.floor() as i64
+    } else {
+        0
+    };
+    let days = secs.div_euclid(86_400);
+    let tod = secs.rem_euclid(86_400);
+
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    (
+        format!("{y:04}-{m:02}-{d:02}"),
+        format!("{:02}:{:02}:{:02}", tod / 3600, (tod / 60) % 60, tod % 60),
+    )
+}
+
 /// Split a command line the way the Python version's `shlex.split()` did, so
 /// quoted paths in the *Executable* field keep working.
 pub fn split_args(s: &str) -> Vec<String> {

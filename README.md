@@ -53,6 +53,7 @@ pixel, so a feature lines up vertically between them.
 | Gesture | Effect |
 |---|---|
 | *Start* / *Stop* | one button, labelled for what it will do |
+| *View -> Frequency ruler* | the yellow `rtl_power`-style ruler above the waterfall |
 | drag on the spectrum | pan both views |
 | scroll on the waterfall | move back and forth through history |
 | **shift** + scroll on the waterfall | stretch time vertically |
@@ -70,13 +71,16 @@ scrolling hands the scale to you, and *Reset view* hands it back.
 Scrolled away from the newest sweep, the waterfall shows a `history -N s` badge
 so a paused-looking display is never mistaken for a stalled one.
 
-The waterfall keeps 8192 sweeps by default -- over two hours at one sweep a
-second -- and *Settings* raises that to 16384, which is the largest texture
-common GPUs allow. Zoomed fully out a pane shows tens of thousands of sweeps at
+The waterfall keeps **16384 sweeps** by default, the most a common GPU's
+texture limit allows -- over four hours at one sweep a second. Settings are
+versioned, so a config written by an earlier build is brought up to that depth
+on first load rather than being pinned to whatever default it was created
+with; the migration only ever raises the value. Zoomed fully out a pane shows tens of thousands of sweeps at
 once, so what bounds the visible span is how much history is kept rather than
 the zoom. The history is also capped by memory, since the cost is
 `bins x sweeps x 4` bytes and a very wide sweep would otherwise ask for
-gigabytes; the row count is reduced to fit and the reduction is logged.
+gigabytes; the row count is reduced to fit and the reduction is logged. The
+same ceiling bounds VRAM, since the waterfall texture mirrors the ring.
 
 ## Recording and export
 
@@ -98,16 +102,23 @@ before that point, and at most the sweep in flight is lost.
 per bin per sweep, not a screenshot of the pane. The extension picks between
 two deliberately different things:
 
-- **PNG** is a picture: the colour map baked into 8-bit RGB, for a report or a
-  bug thread.
+- **PNG** is a picture: the colour map baked into 8-bit RGB, wrapped in
+  labelled margins — a yellow frequency ruler across the top in the style of
+  `rtl_power`'s `heatmap.py`, and wall-clock times down the left, with the
+  capture date in the corner. Tick spacing follows a 1-2-5 ladder, and the SI
+  prefix is the smallest that keeps the largest label under five digits, so a
+  wide sweep reads `200M … 1600M` rather than flipping to `1.6G` partway
+  along. Labels gain a tenths place when sweeps come faster than a second.
 - **TIFF** is the measurement. Pixels are the raw `f32` dB values, written
   through [`fast-tiff-lib`](https://crates.io/crates/fast-tiff-lib) as an
   ImageJ-compatible 32-bit float image. The colour map travels beside the data
   as an ImageJ LUT, along with the display window, so ImageJ opens it looking
   exactly like the screen while *Analyze → Measure* and every plugin still read
   dBm. Baking the colours in would quantise 32-bit data to 8 bits per channel
-  and make the file unmeasurable. Axis parameters — start frequency, bin width,
-  sweep interval — ride along in the ImageJ description.
+  and make the file unmeasurable. It is also why the TIFF carries **no** drawn
+  ruler: painting labels into it would overwrite measurements with decoration.
+  Axis parameters — start frequency, bin width, sweep interval — ride along in
+  the ImageJ description instead.
 
 Both are lossless, which matters when the image is evidence: JPEG ringing
 around a carrier is indistinguishable from a spur.

@@ -13,6 +13,20 @@ use crate::sources::{self, Limits, SweepConfig};
 /// The storage key the whole config lives under.
 pub const STORAGE_KEY: &str = "spectroscope.config";
 
+/// Schema revision of a freshly written config.
+///
+/// Bumped whenever a stored default needs to change for people who already
+/// have a config file. Serde only fills in fields that are *absent*, so a
+/// default that changes in the source has no effect on anyone who has run the
+/// program before -- their old value is present and wins forever.
+pub const CONFIG_VERSION: u32 = 2;
+
+/// What [`Config::config_version`] reads as when the field is missing, which
+/// is any config written before versioning existed.
+fn legacy_config_version() -> u32 {
+    0
+}
+
 /// How persistence curves fade out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DecayFn {
@@ -171,6 +185,10 @@ impl LevelsConfig {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    /// Schema revision this config was written by; see [`CONFIG_VERSION`].
+    #[serde(default = "legacy_config_version")]
+    pub config_version: u32,
+
     // --- backend ----------------------------------------------------------
     /// [`sources::SourceInfo::id`] of the selected backend.
     pub backend: String,
@@ -225,6 +243,8 @@ pub struct Config {
     /// Share of the plot area given to the spectrum (the rest is waterfall).
     pub plot_split: f32,
     pub show_waterfall: bool,
+    /// Frequency ruler above the waterfall.
+    pub show_waterfall_ruler: bool,
     pub show_levels_panel: bool,
     pub show_controls_panel: bool,
     pub dark_mode: bool,
@@ -233,6 +253,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            config_version: CONFIG_VERSION,
             backend: sources::default_source().info().id.to_owned(),
             executable: sources::default_source()
                 .info()
@@ -246,7 +267,7 @@ impl Default for Config {
             sample_rate: 2_560_000.0,
             bandwidth: 0.0,
             lnb_lo: 0.0,
-            waterfall_history_size: 8192,
+            waterfall_history_size: 16_384,
 
             start_freq: 87.0,
             stop_freq: 108.0,
@@ -274,6 +295,7 @@ impl Default for Config {
 
             plot_split: 0.5,
             show_waterfall: true,
+            show_waterfall_ruler: true,
             show_levels_panel: true,
             show_controls_panel: true,
             dark_mode: true,
@@ -282,6 +304,21 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Bring a config written by an older build up to date.
+    ///
+    /// Call once, straight after loading. Only ever *raises* the waterfall
+    /// depth, so this cannot shrink a history someone deliberately enlarged;
+    /// it exists because the shipped default has grown from the Qt build's 100
+    /// sweeps to the full 16384, and a stored value silently pins anyone who
+    /// has run the program before to whatever their first run wrote.
+    pub fn migrate(&mut self) {
+        if self.config_version < 2 {
+            let full = Self::default().waterfall_history_size;
+            self.waterfall_history_size = self.waterfall_history_size.max(full);
+        }
+        self.config_version = CONFIG_VERSION;
+    }
+
     /// The selected backend, falling back to the default if the stored id is
     /// unknown (e.g. a config written by a build that had more backends).
     pub fn source(&self) -> &'static dyn sources::SpectrumSource {
@@ -392,6 +429,74 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_old_config_is_raised_to_the_current_waterfall_depth() {
+        // What someone who ran an early build actually has on disk.
+        let mut cfg = Config {
+            config_version: 0,
+            waterfall_history_size: 100,
+            ..Config::default()
+        };
+        cfg.migrate();
+        assert_eq!(
+            cfg.waterfall_history_size,
+            Config::default().waterfall_history_size
+        );
+        assert_eq!(cfg.config_version, CONFIG_VERSION);
+    }
+
+    #[test]
+    fn migration_never_shrinks_a_deliberately_large_history() {
+        let mut cfg = Config {
+            config_version: 0,
+            waterfall_history_size: usize::MAX,
+            ..Config::default()
+        };
+        cfg.migrate();
+        assert_eq!(cfg.waterfall_history_size, usize::MAX);
+    }
+
+    #[test]
+    fn a_current_config_is_left_alone() {
+        let mut cfg = Config {
+            config_version: CONFIG_VERSION,
+            waterfall_history_size: 512,
+            ..Config::default()
+        };
+        cfg.migrate();
+        assert_eq!(
+            cfg.waterfall_history_size, 512,
+            "a current config is the user's"
+        );
+    }
+
+    #[test]
+    fn a_config_without_a_version_field_counts_as_legacy() {
+        // The container-level `#[serde(default)]` fills absent fields from
+        // `Config::default()`, which would stamp every pre-versioning file as
+        // current and skip the migration entirely. The field needs a default
+        // of its own, and this is what pins that down.
+        let mut cfg: Config =
+            ron::from_str("(waterfall_history_size: 100)").expect("minimal config");
+        assert_eq!(cfg.config_version, 0, "missing version must read as legacy");
+        assert_eq!(cfg.waterfall_history_size, 100);
+
+        cfg.migrate();
+        assert_eq!(
+            cfg.waterfall_history_size,
+            Config::default().waterfall_history_size,
+            "a legacy file must be raised to the current depth"
+        );
+        assert_eq!(cfg.config_version, CONFIG_VERSION);
+    }
+
+    #[test]
+    fn a_written_config_declares_its_version() {
+        let text = ron::ser::to_string(&Config::default()).expect("serialize");
+        let back: Config = ron::from_str(&text).expect("deserialize");
+        assert_eq!(back.config_version, CONFIG_VERSION);
+    }
 
     #[test]
     fn roundtrips_through_ron() {

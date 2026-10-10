@@ -14,10 +14,20 @@ fn main() {
         .unwrap_or_else(|| "waterfall.tif".to_owned());
 
     let demo = sources::find("demo").expect("demo source");
+    let arg = |n: usize, default: f64| {
+        std::env::args()
+            .nth(n)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
+    };
+    let start = arg(2, 87.0);
+    let stop = arg(3, 108.0);
+    let bin = arg(4, 50.0);
+
     let cfg = SweepConfig {
-        start_freq_mhz: 87.0,
-        stop_freq_mhz: 108.0,
-        bin_size_khz: 50.0,
+        start_freq_mhz: start,
+        stop_freq_mhz: stop,
+        bin_size_khz: bin,
         interval_s: 0.01,
         ..Default::default()
     };
@@ -47,7 +57,8 @@ fn main() {
         Some(x) if x.len() > 1 => image_export::Axes {
             start_hz: x[0],
             bin_hz: (x[x.len() - 1] - x[0]) / (x.len() - 1) as f64,
-            sweep_s: 0.01,
+            sweep_s: arg(5, 0.01),
+            newest_unix: spectroscope::util::now_unix(),
         },
         _ => image_export::Axes::default(),
     };

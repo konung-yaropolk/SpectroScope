@@ -16,10 +16,16 @@ use crate::sources::Frame;
 /// Ceiling on the history ring, in bytes.
 ///
 /// The requested row count is a *time* depth, but the cost of it scales with
-/// the sweep width: 4096 rows of a 56k-bin sweep is 920 MB, which would be an
-/// out-of-memory abort rather than a deep waterfall. Rows are given up first
-/// because a narrower time window is a far smaller loss than failing to run.
-const HISTORY_BYTE_BUDGET: usize = 128 << 20;
+/// the sweep width: the full 16384 rows of a 56k-bin sweep is 3.7 GB, which
+/// would be an out-of-memory abort rather than a deep waterfall. Rows are
+/// given up first, because a narrower time window is a far smaller loss than
+/// failing to run. The ceiling is high enough that an ordinary sweep gets the
+/// whole history it asked for -- 16384 rows of 2100 bins is 138 MB -- and only
+/// unusually wide ones are trimmed.
+///
+/// It bounds the GPU as well as the heap: the waterfall texture mirrors this
+/// ring, so whatever is allowed here is also asked of VRAM.
+const HISTORY_BYTE_BUDGET: usize = 256 << 20;
 
 /// Rows the ring can actually afford at this sweep width.
 fn affordable_rows(requested: usize, bins: usize) -> usize {
@@ -688,9 +694,11 @@ mod tests {
     fn history_rows_are_capped_by_memory() {
         // A narrow sweep gets everything it asked for.
         assert_eq!(affordable_rows(4096, 1024), 4096);
-        // A very wide one is cut down rather than allocating hundreds of MiB.
-        let rows = affordable_rows(4096, 56_167);
-        assert!(rows < 4096 && rows > 0, "{rows}");
+        // An ordinary sweep gets the whole history it asked for.
+        assert_eq!(affordable_rows(16_384, 2_100), 16_384);
+        // A very wide one is cut down rather than allocating gigabytes.
+        let rows = affordable_rows(16_384, 56_167);
+        assert!(rows < 16_384 && rows > 0, "{rows}");
         assert!(rows * 56_167 * 4 <= HISTORY_BYTE_BUDGET);
         // Never zero, however absurd the sweep.
         assert_eq!(affordable_rows(4096, usize::MAX / 8), 1);
@@ -701,12 +709,35 @@ mod tests {
 
     #[test]
     fn a_wide_sweep_does_not_allocate_the_full_history() {
-        let mut d = DataStorage::new(4096);
+        let mut d = DataStorage::new(16_384);
         let wide = vec![-90.0f32; 50_000];
         d.update(frame(1.0, &wide)).unwrap();
-        assert!(d.history().capacity() < 4096);
+        assert!(d.history().capacity() < 16_384);
         assert!(d.history().capacity() >= 1);
         assert_eq!(d.history().len(), 1);
+    }
+
+    #[test]
+    fn the_default_depth_of_an_ordinary_sweep_is_allocated_in_full() {
+        // 16384 sweeps of 2100 bins is the shipped default, and it has to be
+        // the depth actually kept rather than silently trimmed.
+        let mut d = DataStorage::new(16_384);
+        d.update(frame(1.0, &vec![-90.0f32; 2100])).unwrap();
+        assert_eq!(d.history().capacity(), 16_384);
+        assert_eq!(d.history().bins(), 2100);
+    }
+
+    #[test]
+    fn a_deep_ring_still_folds_a_sweep_in_cheaply() {
+        // Per-sweep work must stay O(bins), not O(bins * rows): at this depth
+        // a full-ring pass would be tens of millions of values per sweep.
+        let mut d = DataStorage::new(16_384);
+        let row = vec![-90.0f32; 2100];
+        for i in 0..64 {
+            d.update(frame(i as f64, &row)).unwrap();
+        }
+        assert_eq!(d.history().len(), 64);
+        assert_eq!(d.average().len(), 2100);
     }
 
     #[test]

@@ -78,7 +78,11 @@ impl LevelsPanel {
         ui.checkbox(&mut levels.auto, "Auto levels")
             .on_hover_text("Track the range of the stored sweeps");
 
-        let data_range = storage.history_range();
+        // Cached, not recomputed: this used to call `history_range()` every
+        // frame, which walks the whole ring. At the default history that is
+        // tens of millions of values per frame and the UI crawls.
+        self.rebuild_if_stale(storage);
+        let data_range = self.range;
         if levels.auto {
             if let Some((lo, hi)) = data_range {
                 // A little headroom keeps the strongest signals off the very
@@ -118,8 +122,6 @@ impl LevelsPanel {
         if levels.high <= levels.low {
             levels.high = levels.low + 1.0;
         }
-
-        self.rebuild_if_stale(storage);
 
         // The strip and the histogram share one dB axis, so a level handle sits
         // at the same x in both and the window's effect on the colours is read
@@ -203,30 +205,40 @@ impl LevelsPanel {
             return;
         }
 
-        let Some((lo, hi)) = storage.history_range() else {
+        // Both passes sample the same bounded subset. The range feeds the
+        // auto-levels, which is a display convenience rather than a
+        // measurement, so trading exactness for a cost that does not grow with
+        // the history depth is the right way round.
+        let total = history.len() * history.bins().max(1);
+        let stride = (total / MAX_SAMPLES).max(1);
+
+        let mut lo = f32::INFINITY;
+        let mut hi = f32::NEG_INFINITY;
+        for row in history.iter_rows() {
+            for &v in row.iter().step_by(stride) {
+                if v.is_finite() {
+                    lo = lo.min(v);
+                    hi = hi.max(v);
+                }
+            }
+        }
+        if !lo.is_finite() || !hi.is_finite() {
             self.invalidate();
             return;
-        };
+        }
         let span = (hi - lo).max(1e-6);
 
         self.counts.clear();
         self.counts.resize(BUCKETS, 0);
-
-        let total = history.len() * history.bins().max(1);
-        let stride = (total / MAX_SAMPLES).max(1);
-
-        let mut i = 0usize;
         for row in history.iter_rows() {
-            for &v in row.iter().step_by(stride.max(1)) {
+            for &v in row.iter().step_by(stride) {
                 if v.is_finite() {
                     let t = ((v - lo) / span).clamp(0.0, 1.0);
                     let b = ((t * (BUCKETS - 1) as f32) as usize).min(BUCKETS - 1);
                     self.counts[b] += 1;
                 }
-                i += 1;
             }
         }
-        debug_assert!(i > 0 || history.is_empty());
 
         self.range = Some((lo, hi));
         self.built_at = history.counter();

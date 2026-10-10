@@ -1,5 +1,6 @@
 //! Measurement storage.
 
+pub mod annotate;
 pub mod history;
 pub mod image_export;
 pub mod recorder;

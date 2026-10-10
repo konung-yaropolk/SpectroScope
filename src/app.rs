@@ -69,6 +69,8 @@ impl SpectroScopeApp {
             .storage
             .and_then(|s| eframe::get_value::<Config>(s, crate::config::STORAGE_KEY))
             .unwrap_or_default();
+        // Before clamping, so a raised default is still subject to the limits.
+        cfg.migrate();
         cfg.clamp_to(&cfg.source().info().limits);
 
         let mut waterfall = Waterfall::new(cc.wgpu_render_state.clone());
@@ -215,6 +217,7 @@ impl SpectroScopeApp {
                     start_hz: x[0],
                     bin_hz: (x[x.len() - 1] - x[0]) / (x.len() - 1) as f64,
                     sweep_s: self.sweep_time,
+                    newest_unix: self.storage.timestamp(),
                 },
                 _ => crate::data::image_export::Axes::default(),
             };
@@ -462,6 +465,10 @@ impl SpectroScopeApp {
                 ui.menu_button("View", |ui| {
                     ui.checkbox(&mut self.cfg.show_controls_panel, "Control panel");
                     ui.checkbox(&mut self.cfg.show_waterfall, "Waterfall");
+                    ui.add_enabled(
+                        self.cfg.show_waterfall,
+                        egui::Checkbox::new(&mut self.cfg.show_waterfall_ruler, "Frequency ruler"),
+                    );
                     ui.checkbox(&mut self.show_log, "Backend log");
                     ui.separator();
                     if ui.checkbox(&mut self.cfg.dark_mode, "Dark theme").changed() {
@@ -1050,6 +1057,7 @@ impl SpectroScopeApp {
                 counter: history.counter(),
                 gutter_left,
                 gutter_right,
+                show_ruler: self.cfg.show_waterfall_ruler,
             };
             let (head, rows) = (history.head(), history.len());
             let wf = self.waterfall.ui(ui, head, rows, &view);

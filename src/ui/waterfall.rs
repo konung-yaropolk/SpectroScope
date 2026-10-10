@@ -27,6 +27,16 @@ const ALIGN_TEXELS: usize = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize / 4;
 /// Height of the left-hand time-axis gutter's tick marks, in points.
 const TICK_LEN: f32 = 5.0;
 
+/// Height of the frequency ruler above the image, in points.
+const RULER_H: f32 = 17.0;
+/// Shortest gap between ruler labels, so they cannot run together.
+const RULER_LABEL_GAP: f64 = 64.0;
+/// Ruler colours, matching the exported picture so the two cannot drift.
+const RULER_BG: egui::Color32 = egui::Color32::from_rgb(255, 255, 0);
+const RULER_FG: egui::Color32 = egui::Color32::BLACK;
+/// Hard cap on ticks drawn, so a degenerate range cannot stall a frame.
+const MAX_RULER_TICKS: usize = 4096;
+
 /// Vertical stretch limits, in screen points per history row.
 ///
 /// The lower bound is what decides how much time fits on screen at once: at
@@ -78,6 +88,8 @@ pub struct WaterfallView {
     pub gutter_left: f32,
     /// Points to leave clear on the right, matching the spectrum plot.
     pub gutter_right: f32,
+    /// Draw the frequency ruler above the image.
+    pub show_ruler: bool,
 }
 
 /// What the user did to the waterfall this frame.
@@ -180,6 +192,74 @@ fn column_at(at_left: f32, per_uv: f32, uv_x: f32, cols: usize) -> Option<usize>
         return None;
     }
     Some(c as usize)
+}
+
+/// The frequency ruler above the image: a yellow band with tick marks and
+/// labels, in the style of `rtl_power`'s heatmap output.
+///
+/// Tick selection and label formatting come from the image exporter, so the
+/// ruler on screen and the one in a saved PNG cannot disagree. It labels the
+/// *visible* range rather than the data range, so zooming and panning relabel
+/// it rather than sliding fixed labels around.
+fn draw_frequency_ruler(
+    ui: &egui::Ui,
+    band: egui::Rect,
+    image_rect: egui::Rect,
+    view_x: (f64, f64),
+) {
+    use crate::data::annotate::{format_tick, nice_step};
+
+    let painter = ui.painter_at(band);
+    painter.rect_filled(band, 0.0, RULER_BG);
+
+    let span = view_x.1 - view_x.0;
+    let width = image_rect.width() as f64;
+    if !(span > 0.0) || !span.is_finite() || width <= 0.0 {
+        return;
+    }
+
+    let hz_per_point = span / width;
+    let step = nice_step(hz_per_point * RULER_LABEL_GAP);
+    let minor = step / 5.0;
+    if !(minor > 0.0) || !minor.is_finite() {
+        return;
+    }
+
+    let font = egui::FontId::proportional(10.0);
+    let first = (view_x.0 / minor).ceil() * minor;
+
+    for i in 0..MAX_RULER_TICKS {
+        let hz = first + minor * i as f64;
+        if hz > view_x.1 {
+            break;
+        }
+        let x = image_rect.left() + ((hz - view_x.0) / hz_per_point) as f32;
+        if x < image_rect.left() - 0.5 || x > image_rect.right() + 0.5 {
+            continue;
+        }
+
+        // Majors are tested against the step rather than counted, so rounding
+        // cannot drift across a long ruler.
+        let major = ((hz / step).round() * step - hz).abs() < minor * 0.5;
+        let len = if major { 7.0 } else { 4.0 };
+        painter.line_segment(
+            [
+                egui::pos2(x, band.bottom() - len),
+                egui::pos2(x, band.bottom()),
+            ],
+            egui::Stroke::new(1.0, RULER_FG),
+        );
+
+        if major {
+            painter.text(
+                egui::pos2(x, band.top() + 1.0),
+                egui::Align2::CENTER_TOP,
+                format_tick(hz, step, view_x.1),
+                font.clone(),
+                RULER_FG,
+            );
+        }
+    }
 }
 
 /// A frequency range zoomed about `pivot` (0 = left edge, 1 = right edge).
@@ -1046,11 +1126,15 @@ impl Waterfall {
         // The image occupies exactly the columns the spectrum plot data area
         // does, so the two are registered to the pixel; the left gutter carries
         // the time axis, mirroring the plot y-axis labels above.
+        let ruler_h = if view.show_ruler { RULER_H } else { 0.0 };
         let image_rect = egui::Rect::from_min_max(
-            egui::pos2(rect.left() + view.gutter_left.max(0.0), rect.top()),
+            egui::pos2(
+                rect.left() + view.gutter_left.max(0.0),
+                rect.top() + ruler_h,
+            ),
             egui::pos2(rect.right() - view.gutter_right.max(0.0), rect.bottom()),
         );
-        if image_rect.width() <= 0.0 {
+        if image_rect.width() <= 0.0 || image_rect.height() <= 0.0 {
             return out;
         }
 
@@ -1092,6 +1176,14 @@ impl Waterfall {
                 view,
                 background,
             );
+        }
+
+        if view.show_ruler {
+            let band = egui::Rect::from_min_max(
+                egui::pos2(rect.left(), rect.top()),
+                egui::pos2(rect.right(), rect.top() + ruler_h),
+            );
+            draw_frequency_ruler(ui, band, image_rect, view.view_x);
         }
 
         self.draw_time_axis(
@@ -1718,6 +1810,7 @@ mod tests {
             counter: 0,
             gutter_left: 0.0,
             gutter_right: 0.0,
+            show_ruler: false,
         }
     }
 

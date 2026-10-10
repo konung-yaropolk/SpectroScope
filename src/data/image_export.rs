@@ -74,6 +74,21 @@ pub struct Axes {
     pub bin_hz: f64,
     /// Seconds per sweep; `0` when it was never measured.
     pub sweep_s: f64,
+    /// Unix time of the newest sweep, which is image row 0.
+    pub newest_unix: f64,
+}
+
+impl Axes {
+    // Only the PNG path annotates, and that is desktop-only.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn annotation(&self) -> super::annotate::Annotation {
+        super::annotate::Annotation {
+            start_hz: self.start_hz,
+            bin_hz: self.bin_hz,
+            newest_unix: self.newest_unix,
+            sweep_s: self.sweep_s,
+        }
+    }
 }
 
 /// Raw `f32` dB values, row 0 the newest sweep, and the image dimensions.
@@ -143,12 +158,12 @@ pub fn save(
     axes: Axes,
 ) -> Result<(u32, u32), ExportError> {
     match ImageFormat::from_path(path) {
-        ImageFormat::Png => save_png(path, history, lut, low, high),
+        ImageFormat::Png => save_png(path, history, lut, low, high, axes),
         ImageFormat::Tiff => save_tiff(path, history, lut, low, high, axes),
     }
 }
 
-/// Colour-mapped 8-bit RGB.
+/// Colour-mapped 8-bit RGB, inside a labelled frequency/time frame.
 #[cfg(not(target_arch = "wasm32"))]
 fn save_png(
     path: &Path,
@@ -156,8 +171,11 @@ fn save_png(
     lut: &[[u8; 3]; 256],
     low: f32,
     high: f32,
+    axes: Axes,
 ) -> Result<(u32, u32), ExportError> {
-    let (width, height, rgb) = render_rgb(history, lut, low, high).ok_or(ExportError::Empty)?;
+    let (w, h, rgb) = render_rgb(history, lut, low, high).ok_or(ExportError::Empty)?;
+    // A picture is read by eye, so it gets the ruler; the TIFF stays raw.
+    let (width, height, rgb) = super::annotate::with_axes(w, h, &rgb, &axes.annotation());
 
     let buffer = image::RgbImage::from_raw(width, height, rgb)
         .ok_or_else(|| ExportError::Encode("buffer does not match its dimensions".to_owned()))?;
@@ -348,8 +366,9 @@ mod tests {
     fn png_is_a_real_colour_image() {
         let h = history(&[&[-90.0, -40.0], &[-70.0, -20.0]]);
         let path = temp("pic.png");
+        // A PNG is a picture, so it comes out inside its labelled margins.
         let (w, ht) = save(&path, &h, &GREY, -100.0, 0.0, Axes::default()).expect("save");
-        assert_eq!((w, ht), (2, 2));
+        assert_eq!((w, ht), super::super::annotate::outer_size(2, 2));
 
         let decoded = image::ImageReader::open(&path)
             .expect("open")
@@ -357,7 +376,7 @@ mod tests {
             .expect("guess")
             .decode()
             .expect("decode");
-        assert_eq!((decoded.width(), decoded.height()), (2, 2));
+        assert_eq!((decoded.width(), decoded.height()), (w, ht));
 
         let _ = std::fs::remove_file(&path);
     }
@@ -374,6 +393,7 @@ mod tests {
             start_hz: 87e6,
             bin_hz: 10e3,
             sweep_s: 1.5,
+            newest_unix: 1e9,
         };
         let (w, ht) = save(&path, &h, &GREY, -100.0, 0.0, axes).expect("save");
         assert_eq!((w, ht), (2, 2));
@@ -439,6 +459,7 @@ mod tests {
             start_hz: 87e6,
             bin_hz: 10e3,
             sweep_s: 2.0,
+            newest_unix: 1e9,
         };
         save(&path, &h, &GREY, -100.0, 0.0, axes).expect("save");
 

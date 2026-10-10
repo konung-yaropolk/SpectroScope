@@ -70,7 +70,7 @@ optional USB-host support.
 ## Checks
 
 ```bash
-cargo test                                      # 336 unit tests + 3 integration
+cargo test                                      # 357 unit tests + 3 integration
 cargo clippy --all-targets                      # clean
 cargo fmt --all --check
 cargo check --target wasm32-unknown-unknown
