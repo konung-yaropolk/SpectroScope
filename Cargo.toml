@@ -159,7 +159,7 @@ features = [
 # Android-only dependencies
 # ---------------------------------------------------------------------------
 [target.'cfg(target_os = "android")'.dependencies]
-android_logger = "0.14"
+android_logger = "0.15"
 # Must match the version winit 0.30 links, or there will be two AndroidApp types.
 android-activity = { version = "0.6", features = ["native-activity"] }
 
