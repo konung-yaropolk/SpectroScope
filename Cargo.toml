@@ -31,8 +31,13 @@ path = "src/main.rs"
 #     wgpu's platform backends. Without it wgpu compiles but panics at startup
 #     with "No wgpu backend feature that is implemented for the target platform
 #     was enabled", so the backends are selected per target further down.
+#
+# `accesskit` is deliberately missing from this list and added per-target
+# further down: eframe refuses to compile it together with
+# `android-native-activity`, because accesskit_winit's Android adapter only
+# supports GameActivity. Everywhere else it is wanted, so it is switched on for
+# everywhere else.
 eframe = { version = "0.32", default-features = false, features = [
-    "accesskit",
     "default_fonts",
     "persistence",
     "wayland",
@@ -60,7 +65,6 @@ env_logger = { version = "0.11", default-features = false, features = [
     "auto-color",
     "humantime",
 ] }
-rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 
 # Just the PNG decoder: for the window icon, and for the colour-mapped
 # waterfall export. eframe already pulls `image` in, so enabling one of its
@@ -85,6 +89,27 @@ wgpu = { version = "25", default-features = false, features = [
     "wgsl",
 ] }
 
+
+# ---------------------------------------------------------------------------
+# Desktop-only dependencies
+# ---------------------------------------------------------------------------
+# Android is a `not(wasm32)` target too, which is why this table exists
+# separately from the one above: `rfd` picks its backend by target_os and knows
+# windows, macos, the BSDs, linux and wasm32 -- Android matches none of them, so
+# its `backend` module compiles empty while `file_dialog.rs` still imports from
+# it, and the build dies on a dozen unresolved names inside rfd. There is
+# nothing to fix on our side and nothing to replace it with: a file chooser on
+# Android is a Storage Access Framework intent, which needs JNI and an Activity,
+# and the paths it hands back are content:// URIs rather than anything
+# `File::create` would take. The two call sites return `None` there instead.
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+
+# Screen-reader support, everywhere it can be had. See the note on the main
+# eframe dependency for why Android is left out rather than this being a
+# feature of the base entry.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+eframe = { version = "0.32", default-features = false, features = ["accesskit"] }
 
 # ---------------------------------------------------------------------------
 # Web-only dependencies
@@ -138,6 +163,22 @@ android_logger = "0.14"
 # Must match the version winit 0.30 links, or there will be two AndroidApp types.
 android-activity = { version = "0.6", features = ["native-activity"] }
 
+# `EventLoopBuilderExtAndroid` -- the trait that hands the `AndroidApp` to the
+# event loop -- lives in winit, and eframe does not re-export it: its `pub use`
+# list is egui, emath, epaint, egui_glow, glow, egui_wgpu and wgpu, and nothing
+# else. So winit is named directly. Same version eframe's own egui-winit pulls,
+# so Cargo unifies them and there is only ever one event loop type.
+winit = "0.30"
+
+# Which android-activity backend winit builds against is a *feature* decision,
+# and until it is made explicitly it rides on the android-activity dependency
+# above happening to turn the right one on. Saying it here is what keeps the
+# Android build correct if winit ever moves to android-activity 0.7, where that
+# accidental unification would quietly stop.
+eframe = { version = "0.32", default-features = false, features = [
+    "android-native-activity",
+] }
+
 [dev-dependencies]
 ron = "0.10"
 
@@ -184,6 +225,87 @@ wasm-opt = [
     "--enable-nontrapping-float-to-int",
     "--enable-reference-types",
     "--enable-multivalue",
+]
+
+# ---------------------------------------------------------------------------
+# Debian / Ubuntu packaging (cargo-deb)
+# ---------------------------------------------------------------------------
+# Used by the build-linux-deb job in .github/workflows/release.yml. One crate,
+# so every path below is relative to this manifest's directory, which is also
+# the repository root. Output: target/debian/spectroscope_<version>-1_<arch>.deb
+[package.metadata.deb]
+maintainer = "konung_yaropolk"
+section = "hamradio"
+priority = "optional"
+extended-description = """\
+A spectrum analyzer front end for software defined radios: a GPU waterfall \
+over a spectrum plot, peak hold, averaging, smoothing, persistence and \
+baseline subtraction. Drives soapy_power, hackrf_sweep, rtl_power, \
+rtl_power_fftw and rx_power, and has its own rtl_tcp client that needs no \
+helper binary at all."""
+# `$auto` reads the binary's own NEEDED list, which here is little more than
+# libc: everything that makes a window is reached through dlopen, so none of it
+# shows up in the ELF and all of it has to be named by hand.
+#   * X11 and xkbcommon come from winit, and EGL/GL from wgpu's GLES backend,
+#     which is the fallback that always works.
+#   * Vulkan is wgpu's first choice but only a Recommends: the app runs on GLES
+#     without it, and requiring a Vulkan ICD would make the package
+#     uninstallable on machines where it would have worked.
+#   * Wayland likewise -- an X11-only session is still a session.
+depends = "$auto, libx11-6, libxcursor1, libxi6, libxrandr2, libxkbcommon0, libegl1, libgl1"
+recommends = "libvulkan1, mesa-vulkan-drivers, libwayland-client0"
+# The helper-process backends. Every one of them is optional: `rtl_tcp` and
+# `demo` are built in and need nothing installed, so a package that pulled in
+# the whole SoapySDR stack would be charging every user for a backend most of
+# them will not pick.
+suggests = "soapysdr-tools, rtl-sdr, hackrf"
+# Listing assets disables cargo-deb's automatic binary inclusion, so the binary
+# is listed here too. The .desktop entry and the hicolor icons give the app a
+# menu launcher; dpkg refreshes the icon and desktop caches on install.
+assets = [
+    ["target/release/spectroscope", "usr/bin/spectroscope", "755"],
+    ["packaging/spectroscope.desktop", "usr/share/applications/spectroscope.desktop", "644"],
+    ["icon/icon16.png", "usr/share/icons/hicolor/16x16/apps/spectroscope.png", "644"],
+    ["icon/icon32.png", "usr/share/icons/hicolor/32x32/apps/spectroscope.png", "644"],
+    ["icon/icon48.png", "usr/share/icons/hicolor/48x48/apps/spectroscope.png", "644"],
+    ["icon/icon64.png", "usr/share/icons/hicolor/64x64/apps/spectroscope.png", "644"],
+    ["icon/icon128.png", "usr/share/icons/hicolor/128x128/apps/spectroscope.png", "644"],
+    ["icon/icon256.png", "usr/share/icons/hicolor/256x256/apps/spectroscope.png", "644"],
+    ["README.md", "usr/share/doc/spectroscope/README.md", "644"],
+]
+
+# ---------------------------------------------------------------------------
+# Fedora / RHEL / openSUSE packaging (cargo-generate-rpm)
+# ---------------------------------------------------------------------------
+# The RPM counterpart to [package.metadata.deb], used by the build-linux-rpm
+# job. cargo-generate-rpm is pure Rust -- no rpmbuild -- so the RPM is built on
+# the same Ubuntu runner as the .deb. That means it links the runner's glibc,
+# so it targets *recent* RPM distros: the same portability envelope as the .deb.
+#
+# Output: target/generate-rpm/spectroscope-<version>-1.<arch>.rpm, with the arch
+# read from the binary so the two runners in the matrix cannot collide.
+[package.metadata.generate-rpm]
+# `builtin`: scan the ELF's NEEDED sonames and emit `libfoo.so.N()(64bit)`
+# Requires, which every RPM distro resolves through its own package Provides --
+# more portable than hard-coding Fedora vs openSUSE package names, and it works
+# on a non-RPM build host where the usual find-requires helper is absent.
+#
+# Deliberately *not* mirroring the .deb's hand-written depends list: those are
+# dlopened libraries, and an RPM Requires naming them would have to carry the
+# `()(64bit)` arch suffix, which differs between the two architectures this is
+# built for and would therefore be wrong on one of them. Every RPM desktop
+# ships X11, Mesa and xkbcommon regardless; the README says what is needed.
+auto-req = "builtin"
+assets = [
+    { source = "target/release/spectroscope", dest = "/usr/bin/spectroscope", mode = "755" },
+    { source = "packaging/spectroscope.desktop", dest = "/usr/share/applications/spectroscope.desktop", mode = "644" },
+    { source = "icon/icon16.png", dest = "/usr/share/icons/hicolor/16x16/apps/spectroscope.png", mode = "644" },
+    { source = "icon/icon32.png", dest = "/usr/share/icons/hicolor/32x32/apps/spectroscope.png", mode = "644" },
+    { source = "icon/icon48.png", dest = "/usr/share/icons/hicolor/48x48/apps/spectroscope.png", mode = "644" },
+    { source = "icon/icon64.png", dest = "/usr/share/icons/hicolor/64x64/apps/spectroscope.png", mode = "644" },
+    { source = "icon/icon128.png", dest = "/usr/share/icons/hicolor/128x128/apps/spectroscope.png", mode = "644" },
+    { source = "icon/icon256.png", dest = "/usr/share/icons/hicolor/256x256/apps/spectroscope.png", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/spectroscope/README.md", mode = "644" },
 ]
 
 # ---------------------------------------------------------------------------

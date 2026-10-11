@@ -1,0 +1,24 @@
+# Link the Microsoft C runtime into the binary instead of importing it.
+#
+# Without this the .exe carries a static import of VCRUNTIME140.dll, which is
+# part of the Visual C++ Redistributable rather than Windows: present on most
+# machines, absent on a freshly imaged one, and a missing static import stops
+# the program *starting*, with a dialog naming a DLL the user has never heard
+# of. A portable .exe people download and double-click should not have that
+# failure mode. The UCRT forwarders (api-ms-win-crt-*) go the same way.
+#
+# Nothing else is worth linking statically. On Linux the GUI reaches libGL,
+# libvulkan, X11/Wayland and the portal through dlopen, none of which a static
+# libc can serve, and macOS has no supported static libSystem at all. Those two
+# are distributed as self-contained bundles instead (AppImage / Flatpak / .dmg).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.i686-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.i686-win7-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

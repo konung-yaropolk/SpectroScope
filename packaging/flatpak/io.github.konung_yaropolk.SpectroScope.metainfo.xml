@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metainfo for the Flatpak build. Basename must match the app ID. -->
+<component type="desktop-application">
+  <id>io.github.konung_yaropolk.SpectroScope</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <!-- Matches [package] license in Cargo.toml: GPL-3.0-or-later, not -only. -->
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>SpectroScope</name>
+  <summary>Spectrum analyzer for multiple SDR platforms</summary>
+  <description>
+    <p>
+      SpectroScope is a Rust/egui rewrite of QSpectrumAnalyzer: a spectrum
+      analyzer and waterfall display for software-defined radio hardware. The
+      waterfall is rendered on the GPU, so a long sweep history stays scrollable
+      and smooth instead of being redrawn on the CPU frame by frame.
+    </p>
+    <ul>
+      <li>Live spectrum, persistence, peak hold and a GPU waterfall</li>
+      <li>Built-in rtl_tcp backend that needs no external helper program</li>
+      <li>Backends for soapy_power, hackrf_sweep, rtl_power, rtl_power_fftw and rx_power</li>
+      <li>Recording of sweeps and ImageJ-compatible TIFF or PNG export</li>
+      <li>Band plans for a long list of countries, plus the QO-100 transponder</li>
+    </ul>
+    <!-- Honest about the sandbox, because this metainfo ships only with the
+         Flatpak and the limitation is one a user would otherwise hit as a bug:
+         the helper-based backends spawn programs that live on the host, which
+         a sandboxed app cannot reach. See the finish-args comments in
+         io.github.konung_yaropolk.SpectroScope.yml for the full reasoning. -->
+    <p>
+      In this sandboxed build the rtl_tcp and demo backends work out of the box;
+      rtl_tcp is the supported way to reach real hardware, by running the
+      rtl_tcp server on the host or on another machine. The backends that drive
+      an external sweep program (soapy_power, hackrf_sweep, rtl_power,
+      rtl_power_fftw, rx_power) need those programs installed outside the
+      sandbox, where SpectroScope cannot start them; use the AppImage or a
+      native package if you depend on them.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.konung_yaropolk.SpectroScope.desktop</launchable>
+  <url type="homepage">https://github.com/konung-yaropolk/SpectroScope</url>
+  <url type="bugtracker">https://github.com/konung-yaropolk/SpectroScope/issues</url>
+  <provides>
+    <binary>spectroscope</binary>
+  </provides>
+  <!-- Science because measuring a spectrum is the job, and Network because the
+       rtl_tcp backend is a network client; both are main categories, which
+       HamRadio and Electronics require to sit alongside (they are "additional"
+       categories and may not stand alone). No Audio: SpectroScope sweeps and
+       plots, it does not demodulate or play anything. No Graphics/Viewer
+       either, since the TIFF export is an output rather than a document the
+       app opens. (An XML comment cannot contain a double hyphen, so the dashes
+       this project writes elsewhere are spelled out as words in here.) -->
+  <categories>
+    <category>Science</category>
+    <category>Network</category>
+    <category>HamRadio</category>
+    <category>Electronics</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <!-- The version/date below are a placeholder: the release job in
+       .github/workflows/release.yml overwrites this line with the real release
+       version and date at build time, so it never needs hand-editing. -->
+  <releases>
+    <release version="0.0.0" date="2000-01-01"/>
+  </releases>
+</component>

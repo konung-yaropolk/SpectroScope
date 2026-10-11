@@ -1,4 +1,11 @@
 # SpectroScope
+[![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/banner-direct-single.svg)](https://stand-with-ukraine.pp.ua)
+
+[![Try it online](https://img.shields.io/badge/Try%20it-SpectroScope%20Online-5b9dd9?logo=googlechrome&logoColor=white)](https://konung-yaropolk.github.io/SpectroScope/)
+[![Release](https://img.shields.io/github/v/release/konung-yaropolk/SpectroScope?label=release)](https://github.com/konung-yaropolk/SpectroScope/releases)
+[![License](https://img.shields.io/badge/license-%20%20GNU%20GPLv3%20-green)](LICENSE)
+[![Build](https://img.shields.io/github/actions/workflow/status/konung-yaropolk/SpectroScope/release.yml?label=build)](https://github.com/konung-yaropolk/SpectroScope/actions/workflows/release.yml)
+[![Tests](https://img.shields.io/github/actions/workflow/status/konung-yaropolk/SpectroScope/ci.yml?branch=main&label=tests)](https://github.com/konung-yaropolk/SpectroScope/actions/workflows/ci.yml)
 
 Spectrum analyzer for multiple SDR platforms — a Rust rewrite of
 [QSpectrumAnalyzer](https://github.com/xmikos/qspectrumanalyzer) on `egui` with a
@@ -6,9 +13,85 @@ Spectrum analyzer for multiple SDR platforms — a Rust rewrite of
 a browser.
 
 The GUI follows the original: a spectrum plot over a waterfall, with *Controls*,
-*Frequency*, *Settings* and *Levels* panels, and the same measurement features —
+*Frequency*, *Settings* and *Levels* panels, and the same measurement features -
 max/min peak hold, running average, smoothing, a persistence fan and baseline
 subtraction.
+
+## [SpectroScope Online](https://konung-yaropolk.github.io/SpectroScope/) — no install
+
+The same application, compiled to WebAssembly and rendered by your GPU through
+WebGPU (WebGL where that is missing). Nothing is uploaded and there is no
+server: the page is static, and every sweep is computed in the tab.
+
+The `demo` backend makes it usable with no hardware at all. Real hardware works
+too, through the `rtl_tcp` backend — but a browser cannot open a raw TCP socket,
+so that needs a WebSocket bridge in front of the server (see
+[BUILDING.md](BUILDING.md#web)). Recording and image export are desktop-only,
+because a tab has no filesystem to write to.
+
+Needs a current browser with WebGPU or WebGL2 (Chrome/Edge 113+, Firefox 141+).
+
+## Download
+
+Every link below points at the **latest release**; the
+[Releases](https://github.com/konung-yaropolk/SpectroScope/releases) page has older ones.
+
+| Download | For | Install / run |
+|----------|-----|---------------|
+| [**Installer**](https://github.com/konung-yaropolk/SpectroScope/releases/latest/download/SpectroScope-setup.exe) or [**Portable**](https://github.com/konung-yaropolk/SpectroScope/releases/latest/download/SpectroScope.exe) | <img width="16" height="16" alt="windows" src="https://github.com/user-attachments/assets/506a3842-c123-4f21-b571-ef9769573b04" />&nbsp;**Windows 10 / 11** — 64-bit | The installer adds a Start-menu entry; the portable `.exe` just runs. Neither needs the Visual C++ Redistributable. |
+| [`SpectroScope-universal.dmg`](https://github.com/konung-yaropolk/SpectroScope/releases/latest/download/SpectroScope-universal.dmg) | <img width="16" height="16" alt="apple" src="https://github.com/user-attachments/assets/0d2c799e-8aac-4e07-9ee8-96bbccff1693" />&nbsp;**macOS 11+** — Apple Silicon *and* Intel | Open the `.dmg`, drag **SpectroScope** into Applications. |
+| [`SpectroScope-android.apk`](https://github.com/konung-yaropolk/SpectroScope/releases/latest/download/SpectroScope-android.apk) | <img width="16" height="16" alt="android" src="https://cdn.simpleicons.org/android/3DDC84" />&nbsp;**Android 8+** — ARM64 *and* ARM32 | Allow "install from unknown sources", then open the file. See [the Android notes](#android) first. |
+| [`SpectroScope-x86_64.deb`](https://github.com/konung-yaropolk/SpectroScope/releases/latest/download/SpectroScope-x86_64.deb) | <img width="16" height="16" alt="debian" src="https://github.com/user-attachments/assets/2fefe976-d357-4abb-a476-6a8a31b422fe" />&nbsp;**Debian / <img width="16" height="16" alt="ubuntu" src="https://github.com/user-attachments/assets/e2bd815d-709d-4571-9665-f957c90e8300" />&nbsp;Ubuntu** — x86-64 | `sudo apt install ./SpectroScope-x86_64.deb` |
+| [`SpectroScope-arm64.deb`](https://github.com/konung-yaropolk/SpectroScope/releases/latest/download/SpectroScope-arm64.deb) | <img width="16" height="16" alt="debian" src="https://github.com/user-attachments/assets/2fefe976-d357-4abb-a476-6a8a31b422fe" />&nbsp;**Debian / <img width="16" height="16" alt="ubuntu" src="https://github.com/user-attachments/assets/e2bd815d-709d-4571-9665-f957c90e8300" />&nbsp;Ubuntu** — ARM64 | `sudo apt install ./SpectroScope-arm64.deb` |
+| [`SpectroScope-x86_64.rpm`](https://github.com/konung-yaropolk/SpectroScope/releases/latest/download/SpectroScope-x86_64.rpm) | <img width="16" height="16" alt="fedora" src="https://github.com/user-attachments/assets/97817114-81e7-40bd-8b4d-165fc856cba4" />&nbsp;**Fedora / <img width="16" height="16" alt="redhat" src="https://github.com/user-attachments/assets/aaf64e10-797c-4cb7-87d9-04293d761cc8" />&nbsp;RHEL / <img width="16" height="16" alt="suse" src="https://github.com/user-attachments/assets/2f9e5316-fbea-4394-b801-784672831993" />&nbsp;openSUSE** — x86-64 | `sudo dnf install ./SpectroScope-x86_64.rpm` |
+| [`SpectroScope-arm64.rpm`](https://github.com/konung-yaropolk/SpectroScope/releases/latest/download/SpectroScope-arm64.rpm) | <img width="16" height="16" alt="fedora" src="https://github.com/user-attachments/assets/97817114-81e7-40bd-8b4d-165fc856cba4" />&nbsp;**Fedora / <img width="16" height="16" alt="redhat" src="https://github.com/user-attachments/assets/aaf64e10-797c-4cb7-87d9-04293d761cc8" />&nbsp;RHEL / <img width="16" height="16" alt="suse" src="https://github.com/user-attachments/assets/2f9e5316-fbea-4394-b801-784672831993" />&nbsp;openSUSE** — ARM64 | `sudo dnf install ./SpectroScope-arm64.rpm` |
+| [`SpectroScope-x86_64.pkg.tar.zst`](https://github.com/konung-yaropolk/SpectroScope/releases/latest/download/SpectroScope-x86_64.pkg.tar.zst) | <img width="16" height="16" alt="archlinux" src="https://github.com/user-attachments/assets/9bbaa231-f10d-4642-a9a9-a31a8a980e3d" />&nbsp;**Arch Linux** — x86-64 | `sudo pacman -U ./SpectroScope-x86_64.pkg.tar.zst` |
+| [`SpectroScope-x86_64.flatpak`](https://github.com/konung-yaropolk/SpectroScope/releases/latest/download/SpectroScope-x86_64.flatpak) | <img width="16" height="16" alt="linux" src="https://github.com/user-attachments/assets/78810b28-56ac-4d72-b0b1-ad8a93b9d2a9" />&nbsp;**Any Linux** — Flatpak, x86-64 | `flatpak install --user ./SpectroScope-x86_64.flatpak` |
+| [`SpectroScope-arm64.flatpak`](https://github.com/konung-yaropolk/SpectroScope/releases/latest/download/SpectroScope-arm64.flatpak) | <img width="16" height="16" alt="linux" src="https://github.com/user-attachments/assets/78810b28-56ac-4d72-b0b1-ad8a93b9d2a9" />&nbsp;**Any Linux** — Flatpak, ARM64 | `flatpak install --user ./SpectroScope-arm64.flatpak` |
+| [`SpectroScope-x86_64.AppImage`](https://github.com/konung-yaropolk/SpectroScope/releases/latest/download/SpectroScope-x86_64.AppImage) | <img width="16" height="16" alt="linux" src="https://github.com/user-attachments/assets/78810b28-56ac-4d72-b0b1-ad8a93b9d2a9" />&nbsp;**Any Linux** — AppImage, x86-64 | `chmod +x SpectroScope-x86_64.AppImage && ./SpectroScope-x86_64.AppImage` |
+| [`SpectroScope-arm64.AppImage`](https://github.com/konung-yaropolk/SpectroScope/releases/latest/download/SpectroScope-arm64.AppImage) | <img width="16" height="16" alt="linux" src="https://github.com/user-attachments/assets/78810b28-56ac-4d72-b0b1-ad8a93b9d2a9" />&nbsp;**Any Linux** — AppImage, ARM64 | `chmod +x SpectroScope-arm64.AppImage && ./SpectroScope-arm64.AppImage` |
+
+**Which one?** On Linux the **.deb** / **.rpm** / **pacman** packages integrate
+with your system package manager; the **Flatpak** and **AppImage** are
+distro-agnostic and self-contained, which is what you want when no native
+package matches your distro. For the CPU: 64-bit Intel/AMD takes the `x86_64`
+files, 64-bit ARM (Raspberry Pi, Ampere) the `arm64` ones — `uname -m` prints
+`x86_64` or `aarch64`, and `aarch64` is the `arm64` file. **On macOS there is
+nothing to choose**: the `.dmg` holds a universal binary and macOS picks the
+right half at launch. After installing on Linux, start it from the apps menu or
+by running `spectroscope`.
+
+The desktop builds have no runtime dependency of their own — the FFT is pure
+Rust and the Windows build links the C runtime statically. What they do need is
+a working GPU driver: wgpu takes Vulkan where it finds one and falls back to
+OpenGL ES.
+
+**First-launch security prompt** (the binaries are not signed with a paid
+developer certificate):
+
+- **Windows** — SmartScreen may warn: *More info → Run anyway*.
+- **macOS** — Gatekeeper blocks unsigned apps the first time: **right-click the
+  app → Open** (then confirm), or run
+  `xattr -dr com.apple.quarantine /Applications/SpectroScope.app` once.
+
+### Android
+
+The APK carries both ABIs, so one file covers every phone. Three things are
+worth knowing before you install it:
+
+- It is **signed with a throwaway key** generated during the build, unless the
+  repository has a release keystore configured. It installs, but Android will
+  refuse to upgrade over an APK from an earlier release, because the keys
+  differ — uninstall the old version first.
+- The **helper-process backends do not work**. `soapy_power`, `hackrf_sweep`,
+  `rtl_power`, `rtl_power_fftw` and `rx_power` are separate programs that
+  Android will not let an app execute. Use `rtl_tcp` over the network, which
+  needs no helper and is how you reach real hardware here, or `demo`.
+- There is **no file dialog**, so paths for recording and export have to be
+  typed rather than browsed.
+
+Not listed (32-bit x86, or another CPU)? Build from source — see
+[BUILDING.md](BUILDING.md).
 
 ## Backends
 

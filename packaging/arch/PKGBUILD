@@ -1,0 +1,87 @@
+# Maintainer: konung_yaropolk
+# Builds SpectroScope from git. The version is read from Cargo.toml by pkgver()
+# (a tarball source can't, since the URL would need the version up front). Used
+# for AUR and by the Arch job in .github/workflows/release.yml, which pins the
+# git source to the released tag before running makepkg.
+pkgname=spectroscope
+pkgver=0
+pkgrel=1
+pkgdesc="Spectrum analyzer for multiple SDR platforms"
+arch=('x86_64')
+url="https://github.com/konung-yaropolk/SpectroScope"
+license=('GPL-3.0-or-later')
+# Runtime libs the GUI needs. wgpu is the only renderer this crate builds, so
+# the graphics deps are Vulkan first (vulkan-icd-loader provides the libvulkan
+# that wgpu dlopens) with GLES/EGL from libglvnd as the fallback for machines
+# with no usable Vulkan ICD. The rest is winit: libxkbcommon for keymaps on
+# both backends, wayland for the Wayland one, and the four Xlib libs for X11.
+# No gtk3 — the file dialog is rfd's xdg-portal backend, which is a pure-Rust
+# D-Bus client and links no toolkit (see `optdepends`).
+# Trim with `namcap` against the built package if you want a minimal set.
+depends=('gcc-libs' 'glibc' 'vulkan-icd-loader' 'libglvnd' 'libxkbcommon'
+         'libx11' 'libxcursor' 'libxi' 'libxrandr' 'wayland')
+# None of these are needed to start the app: the built-in `rtl_tcp` backend is
+# a plain TCP client and the `demo` backend is synthetic, so a bare install is
+# already usable. The rest are what the other backends shell out to.
+optdepends=('vulkan-driver: hardware Vulkan backend (otherwise falls back to OpenGL ES)'
+            'xdg-desktop-portal: native file open/save dialogs, with a backend such as xdg-desktop-portal-gtk'
+            'rtl-sdr: rtl_power backend, and a local rtl_tcp server to connect to'
+            'hackrf: hackrf_sweep backend'
+            'soapysdr: SoapySDR devices for the soapy_power backend (soapy_power itself is in the AUR)')
+makedepends=('rust' 'git')
+# Strip the binary but don't split symbols into a separate spectroscope-debug
+# package — so the release only gets the one .pkg.tar.zst.
+options=('!debug' 'strip')
+source=("$pkgname::git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+    # The crate version from Cargo.toml. Single crate, so the manifest sits at
+    # the root of the clone and `[package] version` is the first `version =`
+    # key in it — hence `exit` after the first match, which stops awk before
+    # it reaches the dependency versions further down.
+    awk -F'"' '/^version[[:space:]]*=/ {print $2; exit}' "$srcdir/$pkgname/Cargo.toml"
+}
+
+prepare() {
+    cd "$pkgname"
+    # Reconcile only the bumped crate version into Cargo.lock: --workspace
+    # leaves every external dependency at its locked version, so the build stays
+    # reproducible while --locked/--frozen below no longer fail when the
+    # committed lock lags a version bump.
+    cargo update --workspace
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "$pkgname"
+    export CARGO_TARGET_DIR=target
+    # A plain release build: the crate has no renderer feature flags to choose
+    # between (wgpu is the only one) and no optional features worth toggling, so
+    # the default feature set is exactly what we want to ship. `--frozen` keeps
+    # makepkg offline-friendly — prepare() already fetched every crate.
+    #
+    # `--bin`, because the crate is also a `cdylib` -- the half wasm-bindgen
+    # and the Android NDK link against. Building it here would link a
+    # libspectroscope.so that exports nothing, that the package does not
+    # install and that nothing loads; naming the binary target skips it.
+    cargo build --frozen --release --bin spectroscope
+}
+
+package() {
+    cd "$pkgname"
+    # The binary is already lowercase, so there is no second convenience name
+    # to symlink: `spectroscope` is both the crate's bin name and what the
+    # .desktop file's Exec= line calls.
+    install -Dm755 target/release/spectroscope "$pkgdir/usr/bin/spectroscope"
+    # Desktop menu launcher + hicolor icons (pacman hooks refresh the caches).
+    install -Dm644 packaging/spectroscope.desktop "$pkgdir/usr/share/applications/spectroscope.desktop"
+    # Committed hicolor icons (pre-rendered from icon.svg by icon/generate-icons.bat).
+    # These go under apps/ only: SpectroScope handles no MIME type, so there is
+    # no document icon to install under mimetypes/.
+    for s in 16 32 48 64 128 256; do
+        install -Dm644 "icon/icon${s}.png" \
+            "$pkgdir/usr/share/icons/hicolor/${s}x${s}/apps/spectroscope.png"
+    done
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

@@ -81,18 +81,22 @@ mod web {
 // Android entry point
 // ---------------------------------------------------------------------------
 
-/// Entry point `cargo-apk` / `cargo-ndk` wires up through the
+/// Entry point `cargo-apk2` / `cargo-ndk` wires up through the
 /// `android-activity` glue inside winit.
 ///
 /// The whole application lives in this library precisely so that Android and
 /// the web can own the event loop; `main.rs` is only used for desktop builds.
 ///
-/// Note: this cannot be compiled without the Android NDK, so it is gated off
-/// every other target. See `BUILDING.md` for the toolchain setup.
+/// `cargo check --target aarch64-linux-android` compiles this without an NDK
+/// (nothing is linked), which is what CI does; producing an .apk needs the SDK
+/// and NDK, and `BUILDING.md` has the toolchain setup.
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub fn android_main(app: android_activity::AndroidApp) {
-    use eframe::egui_winit::winit::platform::android::EventLoopBuilderExtAndroid;
+    // From winit directly: eframe re-exports egui, epaint, egui_wgpu and wgpu,
+    // but neither winit nor egui-winit, so there is no `eframe::egui_winit`
+    // path to reach this through.
+    use winit::platform::android::EventLoopBuilderExtAndroid;
 
     android_logger::init_once(
         android_logger::Config::default().with_max_level(log::LevelFilter::Info),

@@ -1,0 +1,101 @@
+# Build the egui web app and publish it to GitHub Pages.
+#
+# Enable once under Settings → Pages → Source → "GitHub Actions"; after that
+# every push to main redeploys. `workflow_dispatch` allows a manual run.
+#
+# The browser build is the same Rust code as the desktop one. What it loses is
+# the filesystem — recording and image export are compiled out — and raw TCP,
+# so the rtl_tcp backend talks WebSocket and wants a bridge in front of the
+# server. The `demo` backend needs neither and is what makes the page useful
+# with nothing plugged in.
+name: Deploy web app
+
+on:
+  push:
+    branches: [main]
+    # Only rebuild when something the bundle actually contains changes. The
+    # whole GUI is shared with the desktop build, so that is most of src/.
+    paths:
+      - "src/**"
+      - "index.html"
+      - "icon/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/deploy-web.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deploys race; let an in-flight one finish rather than
+# cancelling it half-published.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # Pinned, as ci.yml's Linux job is. This is the job that produces what gets
+    # served, so it is the last place to want a floating image.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      # rust-toolchain.toml pins the channel (1.96) and already lists
+      # wasm32-unknown-unknown under `targets`, so rustup installs it here
+      # without this workflow naming it.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+
+      # Pinned, never `latest`. With `latest` this action resolves the version
+      # through an *unauthenticated* GitHub API call and falls back to
+      # wasm-pack v0.9.1 when that call is rate limited — which fetches
+      # Binaryen 90, which cannot represent a module with more than one table,
+      # which is what wasm-bindgen has emitted ever since rustc turned
+      # reference-types on for wasm32. The symptom is a deploy that breaks with
+      # no commit behind it, intermittently. Naming a version means the lookup
+      # never happens, so the fallback cannot fire.
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: v0.15.0
+
+      # Cargo.toml's [package.metadata.wasm-pack.profile.release] passes
+      # wasm-opt the feature flags it needs to parse what rustc 1.96 emits;
+      # without them this step dies on "error validating input".
+      - name: Build wasm
+        run: wasm-pack build --target web --out-dir pkg --release
+
+      # index.html loads ./pkg/… relatively, so the site works at any subpath
+      # and no base-path substitution is needed.
+      - name: Assemble the site
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp index.html dist/
+          cp -r pkg dist/pkg
+          # index.html points its favicon at icon/icon.svg, so the icon
+          # directory has to come along; taking it from the app's own icon set
+          # means the tab icon and the desktop build cannot drift apart.
+          mkdir -p dist/icon
+          cp icon/icon.svg icon/icon32.png icon/icon256.png dist/icon/
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

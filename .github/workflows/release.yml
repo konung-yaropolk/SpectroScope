@@ -1,0 +1,799 @@
+name: Release
+
+# Runs when you publish a GitHub Release. Builds SpectroScope for Windows
+# (portable .exe + an Inno Setup installer), Linux (.deb, .rpm, an Arch
+# .pkg.tar.zst, a Flatpak bundle and an AppImage — the last three all x86_64 +
+# arm64), macOS (one universal .dmg carrying both Apple Silicon and Intel) and
+# Android (an .apk), and attaches every artifact to the release that triggered
+# the run.
+#
+# Jobs are independent on purpose: a failing packager attaches nothing but
+# never blocks the release or the other packages. Each asset gets a
+# version-less name so the README can link it through GitHub's
+# releases/latest/download/ redirect; the version is still inside every
+# package's own metadata.
+#
+# Icons are committed, pre-rendered from icon.svg by icon/generate-icons.bat
+# (run once at dev time), so nothing here rasterizes an SVG.
+#
+# Everywhere a build is invoked directly it passes `--bin spectroscope`. The
+# crate is also a `cdylib` — the half wasm-bindgen and the Android NDK link
+# against — and on a desktop target that produces a spectroscope.dll /
+# libspectroscope.so which exports nothing, which the executable does not load,
+# and which nobody should ship.
+on:
+  release:
+    types: [published]
+
+# Needed so the workflow can upload the built artifacts back onto the release.
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      # Release-mode tests so the optimized build below reuses these artifacts.
+      - name: Run tests
+        run: cargo test --release --all-targets
+
+      # build.rs embeds icon/icon.ico and the [package.metadata.winres] strings
+      # into the .exe, and .cargo/config.toml links the CRT statically so the
+      # result needs no Visual C++ Redistributable.
+      - name: Build release exe
+        run: cargo build --release --bin spectroscope
+
+      # The tripwire for that static link, and the reason it is worth a step.
+      # A dependency bump can reintroduce a dynamic-CRT import at any time, and
+      # the failure mode is the worst kind: the program does not start at all,
+      # on somebody else's machine, with a dialog naming VCRUNTIME140.dll.
+      - name: Check nothing pulled the dynamic C runtime back in
+        run: >
+          python scripts/pe_imports.py target/release/spectroscope.exe
+          --forbid VCRUNTIME --forbid api-ms-win-crt
+
+      # Capitalised, because the asset is a product download rather than a unix
+      # command; cargo names the file after the [[bin]] target, which is
+      # lowercase.
+      - name: Stage artifact
+        shell: bash
+        run: cp target/release/spectroscope.exe SpectroScope.exe
+
+      - name: Attach exe to release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: SpectroScope.exe
+
+      # Package the same exe into an installer (Start Menu entry, optional
+      # desktop shortcut, uninstaller) with Inno Setup — it reads
+      # packaging/windows/spectroscope.iss and bundles the SpectroScope.exe
+      # staged above, so there is no second build. Ships alongside the portable
+      # .exe so users can pick either.
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          $ver = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages `
+            | Where-Object { $_.name -eq 'spectroscope' } | Select-Object -ExpandProperty version
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) {
+            choco install innosetup -y --no-progress
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          }
+          & $iscc "/DMyAppVersion=$ver" packaging\windows\spectroscope.iss
+
+      - name: Attach installer to release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: SpectroScope-setup.exe
+
+  # Builds the Debian/Ubuntu .deb with cargo-deb. Runs once per architecture on
+  # a native runner (no cross-compiling the X11/GL stack): ubuntu-24.04 ->
+  # x86_64, ubuntu-24.04-arm -> arm64. The attached file is renamed to a stable
+  # SpectroScope-<arch>.deb; the .deb's own Architecture tag stays amd64/arm64.
+  build-linux-deb:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      # Build-time libs the GUI links: OpenGL headers and the X11 / Wayland /
+      # xkbcommon stack winit needs. No GTK — the file dialog is rfd's
+      # xdg-portal backend, a pure-Rust D-Bus client. The *runtime* package
+      # dependencies come from [package.metadata.deb] in Cargo.toml, which
+      # names the dlopened ones by hand because `$auto` cannot see them.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libgl1-mesa-dev \
+            libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
+            libxkbcommon-dev libwayland-dev
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked
+
+      # Reads [package.metadata.deb] from Cargo.toml, which lists the committed
+      # hicolor PNGs and the .desktop entry as assets. Output:
+      # target/debian/spectroscope_<version>-1_<amd64|arm64>.deb
+      - name: Build .deb
+        run: cargo deb
+
+      # Copy to a stable, version-less name (cargo-deb bakes the version into
+      # its filename) so the README can link via releases/latest/download/.
+      - name: Stage stable-named .deb
+        run: cp target/debian/*.deb "SpectroScope-${{ matrix.arch }}.deb"
+
+      - name: Attach .deb to release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: SpectroScope-*.deb
+
+  # Builds the Fedora/RHEL/openSUSE .rpm with cargo-generate-rpm (pure Rust, no
+  # rpmbuild) and attaches it, mirroring the .deb job: same native runners, same
+  # system build-deps. Reads [package.metadata.generate-rpm] from Cargo.toml.
+  # Like the .deb it links the runner's glibc, so it targets recent RPM distros.
+  build-linux-rpm:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libgl1-mesa-dev \
+            libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
+            libxkbcommon-dev libwayland-dev
+
+      - name: Install cargo-generate-rpm
+        run: cargo install cargo-generate-rpm --locked
+
+      # The release profile already strips the binary, which
+      # cargo-generate-rpm packages as-is; auto-req still reads the ELF's
+      # NEEDED sonames.
+      - name: Build release binary
+        run: cargo build --release --bin spectroscope
+
+      # Output: target/generate-rpm/spectroscope-<version>-1.<arch>.rpm, with
+      # the arch read from the binary so the two runners cannot collide.
+      - name: Build .rpm
+        run: cargo generate-rpm
+
+      - name: Stage stable-named .rpm
+        run: cp target/generate-rpm/*.rpm "SpectroScope-${{ matrix.arch }}.rpm"
+
+      - name: Attach .rpm to release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: SpectroScope-*.rpm
+
+  # Builds a pacman package (.pkg.tar.zst) from packaging/arch/PKGBUILD and
+  # attaches it — the Arch counterpart to the .deb / .exe jobs.
+  #
+  # Runs inside an Arch container. makepkg refuses to run as root, so it is
+  # driven as an unprivileged user; every dependency is pre-installed, so
+  # makepkg needs no sudo or pacman access of its own.
+  build-arch:
+    runs-on: ubuntu-24.04
+    container:
+      image: archlinux:latest
+    steps:
+      # base-devel = makepkg + fakeroot etc.; git for the source clone; rust
+      # for the build; the rest are the PKGBUILD's own `depends`, pre-installed
+      # so makepkg's dependency check passes without -s.
+      - name: Install build tooling + runtime libs
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel git rust \
+            vulkan-icd-loader libglvnd libxkbcommon \
+            libx11 libxcursor libxi libxrandr wayland fontconfig
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Build exactly the released commit: pin the git source to the tag.
+      # pkgver() in the PKGBUILD derives the version number from Cargo.toml.
+      - name: Pin source to released tag
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: sed -i "s|\.git\")|.git#tag=${TAG}\")|" packaging/arch/PKGBUILD
+
+      - name: Build package
+        run: |
+          useradd -m builder
+          cp packaging/arch/PKGBUILD /home/builder/PKGBUILD
+          chown -R builder:builder /home/builder
+          sudo -u builder bash -lc 'cd ~ && makepkg --noconfirm'
+
+      # Stable, version-less name for the README's latest/download/ link (Arch
+      # is x86_64-only here; the package metadata still carries the version).
+      - name: Stage stable-named package
+        run: cp /home/builder/*.pkg.tar.zst SpectroScope-x86_64.pkg.tar.zst
+
+      - name: Attach package to release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: SpectroScope-x86_64.pkg.tar.zst
+
+  # Builds a distributable Flatpak bundle (.flatpak) for both architectures on
+  # native runners and attaches it.
+  #
+  # The flatpak-builder sandbox has no build-time network, so crates are
+  # vendored first: flatpak-cargo-generator turns Cargo.lock into
+  # generated-sources.json, which the manifest references. The app is then
+  # compiled offline inside the org.freedesktop 25.08 SDK + rust-stable
+  # extension — so no Rust toolchain is needed on the host, only Cargo.lock.
+  build-flatpak:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install flatpak + builder + generator deps
+        run: |
+          sudo apt-get update
+          # flatpak-cargo-generator (from master) parses Cargo.lock with
+          # tomlkit and fetches crate hashes with aiohttp.
+          sudo apt-get install -y --no-install-recommends \
+            flatpak flatpak-builder python3-aiohttp python3-tomlkit
+          flatpak remote-add --user --if-not-exists flathub \
+            https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user --noninteractive flathub \
+            org.freedesktop.Platform//25.08 \
+            org.freedesktop.Sdk//25.08 \
+            org.freedesktop.Sdk.Extension.rust-stable//25.08
+
+      # Stamp the release version + date into the AppStream metainfo's
+      # <release> entry, so it never has to be hand-edited before a release
+      # (the committed value is a placeholder). The date comes from the
+      # published release, falling back to today.
+      - name: Stamp version + date into the metainfo
+        run: |
+          VERSION="$(awk -F'"' '/^version = / {print $2; exit}' Cargo.toml)"
+          DATE="${{ github.event.release.published_at }}"; DATE="${DATE:0:10}"
+          [ -n "$DATE" ] || DATE="$(date -u +%Y-%m-%d)"
+          sed -i -E "s#<release version=\"[^\"]*\" date=\"[^\"]*\"\s*/>#<release version=\"$VERSION\" date=\"$DATE\"/>#" \
+            packaging/flatpak/io.github.konung_yaropolk.SpectroScope.metainfo.xml
+
+      # Vendor every crate from Cargo.lock into generated-sources.json (the
+      # offline sources the manifest pulls in), next to the manifest.
+      - name: Generate offline cargo sources
+        run: |
+          curl -sSL -o flatpak-cargo-generator.py \
+            https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py
+          python3 flatpak-cargo-generator.py Cargo.lock \
+            -o packaging/flatpak/generated-sources.json
+
+      # Keep build-dir/repo OUTSIDE the checkout: the manifest's `dir` source
+      # is the repo root, so building inside it would recurse.
+      - name: Build Flatpak bundle
+        run: |
+          set -euo pipefail
+          flatpak-builder --user --disable-rofiles-fuse --force-clean \
+            --repo="$RUNNER_TEMP/repo" "$RUNNER_TEMP/build-dir" \
+            packaging/flatpak/io.github.konung_yaropolk.SpectroScope.yml
+          flatpak build-bundle "$RUNNER_TEMP/repo" \
+            "SpectroScope-${{ matrix.arch }}.flatpak" \
+            io.github.konung_yaropolk.SpectroScope
+          echo "FLATPAK_NAME=SpectroScope-${{ matrix.arch }}.flatpak" >> "$GITHUB_ENV"
+
+      - name: Attach .flatpak to release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: ${{ env.FLATPAK_NAME }}
+
+  # Builds a portable AppImage for both architectures. linuxdeploy bundles the
+  # binary together with its shared-library dependencies into a single
+  # self-contained file that runs on most modern Linux distros with nothing to
+  # install. Native runners, so the bundled libs match the target arch.
+  #
+  # No `--plugin gtk`, unlike some other projects: SpectroScope's file dialog is
+  # rfd's xdg-portal backend, which talks to the host's portal over D-Bus and
+  # needs no toolkit inside the bundle. The GPU driver is likewise the host's —
+  # wgpu dlopens libvulkan / libEGL at runtime, so linuxdeploy's ldd walk does
+  # not see them and must not bundle them.
+  build-appimage:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libgl1-mesa-dev \
+            libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
+            libxkbcommon-dev libwayland-dev
+
+      - name: Build release binary
+        run: cargo build --release --bin spectroscope
+
+      # APPIMAGE_EXTRACT_AND_RUN lets the tools run without FUSE (unavailable
+      # on the runners); OUTPUT names the file.
+      - name: Build AppImage
+        run: |
+          set -euo pipefail
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          base="https://github.com/linuxdeploy"
+          # Our asset names use arm64, but linuxdeploy's own releases use the
+          # kernel name aarch64 — map it just for these download URLs.
+          dl_arch="${{ matrix.arch }}"
+          [ "$dl_arch" = arm64 ] && dl_arch=aarch64
+          curl -sSL -o linuxdeploy \
+            "$base/linuxdeploy/releases/download/continuous/linuxdeploy-${dl_arch}.AppImage"
+          curl -sSL -o linuxdeploy-plugin-appimage \
+            "$base/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-${dl_arch}.AppImage"
+          chmod +x linuxdeploy linuxdeploy-plugin-appimage
+          export PATH="$PWD:$PATH"   # so linuxdeploy finds the plugin
+          export OUTPUT="SpectroScope-${{ matrix.arch }}.AppImage"
+          ./linuxdeploy \
+            --appdir AppDir \
+            --executable target/release/spectroscope \
+            --desktop-file packaging/spectroscope.desktop \
+            --icon-file icon/icon256.png \
+            --icon-filename spectroscope \
+            --output appimage
+          echo "APPIMAGE_NAME=$OUTPUT" >> "$GITHUB_ENV"
+
+      - name: Attach AppImage to release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: ${{ env.APPIMAGE_NAME }}
+
+  # Builds the Android APK and attaches it -- the one target here that is not a
+  # desktop. ONE APK carries both ABIs (arm64-v8a and armeabi-v7a), because
+  # [package.metadata.android] lists both triples in build_targets and
+  # cargo-apk2 packs every one it is given into the same file. Nothing for the
+  # user to choose and no -arch suffix to get wrong.
+  #
+  # cargo-apk2, not cargo-apk. The original rust-mobile/cargo-apk has had no
+  # release since 0.10.0 (November 2023) and its crate page points at
+  # rust-mobile/xbuild, whose own repository now describes itself as
+  # unmaintained. cargo-apk2 is the live fork of that same code: the same
+  # [package.metadata.android] schema, the same NativeActivity model, releases
+  # through 2026, and an egui example in its own workspace. It is the only
+  # maintained option that takes this crate as it stands -- one cdylib, no
+  # Gradle project, no Java sources, no AndroidManifest to commit. The
+  # alternative, cargo-ndk plus Gradle, is what you reach for to publish an
+  # .aab to the Play Store; it is far too much committed machinery for one
+  # sideloadable file. Pinned exactly, because a one-maintainer fork is the
+  # wrong thing to float and a release job the wrong place to discover a change.
+  #
+  # `continue-on-error`, and on the JOB rather than a step. Android is the one
+  # platform here with nothing standing behind it: a single-maintainer
+  # toolchain, an .apk whose packaging no other job exercises, and a build
+  # driven by Cargo.toml metadata that nothing else validates. When it breaks it
+  # should cost this one asset and leave the release and the other packages
+  # alone. Step-level would be worse than useless -- it would paint the job
+  # green and happily attach whatever file was lying around. (ci.yml's
+  # check-android job compiles both ABIs on every push, so a *source* break is
+  # caught long before here; what is left for this flag to absorb is the
+  # toolchain and the packaging.)
+  build-android:
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # cargo-apk2 shells out to javac, jar, d8, aapt2 and keytool and finds
+      # them through JAVA_HOME. The runner image ships several JDKs; setup-java
+      # is what guarantees the variable exists and names one the Android build
+      # tools accept. 17 is the version the Android toolchain is built against.
+      - name: Install JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # `rustup target add`, and NOT the toolchain action's `targets:` input.
+      # rust-toolchain.toml pins the channel to 1.96, so that is the toolchain
+      # every cargo call in this directory uses -- while the action's input
+      # would add the target to `stable`, the toolchain nothing here runs.
+      # `rustup target add` with no --toolchain resolves the active one through
+      # the same file, so it lands where cargo will look for it.
+      - name: Add the Android targets
+        run: rustup target add aarch64-linux-android armv7-linux-androideabi
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Shared with ci.yml's check-android job, and separate from every
+          # x86_64 job here. rust-cache also caches ~/.cargo/bin, which is what
+          # keeps the `cargo install` below from being paid for on every run.
+          key: android
+
+      # The runner image already carries the whole SDK at $ANDROID_HOME, so
+      # there is no setup-android step. This pins the two pieces whose absence
+      # would be fatal rather than slow:
+      #
+      #  * platforms;android-34 -- [package.metadata.android.sdk]
+      #    target_sdk_version is 34, and the generated manifest and resources
+      #    are compiled against exactly that platform's android.jar. A missing
+      #    android-34 is a hard error, not a fallback.
+      #  * build-tools;35.0.0 -- the tool always picks the HIGHEST build-tools
+      #    version present, so this does not select 35.0.0; it guarantees the
+      #    maximum is at least 35, which is where `zipalign -P 16` appeared.
+      #    That flag aligns the uncompressed .so files to 16 KB pages, without
+      #    which users of 16 KB-page devices are told the app is not compatible.
+      - name: Pin the SDK pieces cargo-apk2 needs
+        run: |
+          set -euo pipefail
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes 2>/dev/null | "$sdkmanager" --licenses >/dev/null || true
+          "$sdkmanager" --install "platforms;android-34" "build-tools;35.0.0"
+
+      # The image sets ANDROID_NDK_ROOT to its *default* NDK rather than the
+      # newest, which is what we want: the newest NDK is the one most likely to
+      # have moved something. The assert is the point of the step -- the common
+      # way to misconfigure this is to point the variable at <sdk>/ndk instead
+      # of <sdk>/ndk/<version>, and failing here with that path on screen beats
+      # failing later inside a cross-compile with a message about a sysroot.
+      - name: Check the NDK the tool will use
+        run: |
+          set -euo pipefail
+          echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
+          test -f "$ANDROID_NDK_ROOT/build/core/platforms.mk" \
+            || { echo "::error::$ANDROID_NDK_ROOT is not an NDK directory (it must be <sdk>/ndk/<version>)"; exit 1; }
+
+      # --locked so cargo-apk2's own published lockfile decides its dependency
+      # versions; an unpinned transitive break there would read as a
+      # SpectroScope failure.
+      - name: Install cargo-apk2
+        run: cargo install --locked cargo-apk2@1.4.2
+
+      # An APK that is not signed cannot be installed by ANY route -- adb and
+      # the on-device installer both reject it outright -- so an unsigned asset
+      # would be a file nobody can use. cargo-apk2 mints a debug keystore on
+      # demand for the `dev` profile only; for any other profile it fails
+      # outright unless handed a key, so a --release build has to bring one.
+      #
+      # Two ways in, in order of preference:
+      #
+      #  * the ANDROID_KEYSTORE_BASE64 + ANDROID_KEYSTORE_PASSWORD repository
+      #    secrets, if set. This is what you want long term, because on Android
+      #    the signing key IS the app's identity: an installed SpectroScope can
+      #    only be upgraded in place by an APK carrying the same key. Mint one
+      #    once with
+      #       keytool -genkeypair -keystore spectroscope.keystore \
+      #         -storepass "$PW" -keypass "$PW" -alias spectroscope \
+      #         -keyalg RSA -keysize 4096 -validity 10000 \
+      #         -dname "CN=SpectroScope, O=konung_yaropolk, C=UA"
+      #    then `base64 -w0 spectroscope.keystore` into the secret, and keep the
+      #    file: losing it means every existing install has to be uninstalled
+      #    before the next release will go on.
+      #
+      #  * failing that, a throwaway key minted here, so the workflow still
+      #    produces an installable APK in a repository with no secrets
+      #    configured. It is a different key every run, which is exactly the
+      #    upgrade problem above -- hence the warning in the README and the
+      #    notice this step writes into the job summary.
+      #
+      # The throwaway password is "android", the same one the tool uses for its
+      # own debug keystores. There is nothing to protect in a key generated,
+      # used once and discarded, and a secret-looking password would only
+      # disguise what it is.
+      #
+      # Both branches must produce a keystore with exactly ONE entry whose key
+      # password equals the store password: the signer runs
+      # `apksigner sign --ks <path> --ks-pass pass:<pw>` with no
+      # --ks-key-alias, so it cannot choose between entries or passwords.
+      - name: Prepare the signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KS="$RUNNER_TEMP/spectroscope-release.keystore"
+          if [ -n "${KEYSTORE_BASE64:-}" ] && [ -n "${KEYSTORE_PASSWORD:-}" ]; then
+            printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$KS"
+            echo "CARGO_APK_RELEASE_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "Signing with the repository's release keystore."
+          else
+            keytool -genkeypair -v \
+              -keystore "$KS" -storepass android -keypass android \
+              -alias spectroscope -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=SpectroScope (unofficial build), O=konung_yaropolk, C=UA"
+            echo "CARGO_APK_RELEASE_KEYSTORE_PASSWORD=android" >> "$GITHUB_ENV"
+            {
+              echo "### Android APK signed with a throwaway key"
+              echo
+              echo "No \`ANDROID_KEYSTORE_BASE64\` secret is set, so this APK was signed with a"
+              echo "key generated during this run. It installs, but Android will refuse to"
+              echo "upgrade over an APK from an earlier release -- the old version has to be"
+              echo "uninstalled first. Set the \`ANDROID_KEYSTORE_BASE64\` and"
+              echo "\`ANDROID_KEYSTORE_PASSWORD\` secrets to sign every release with one key."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # CARGO_APK_<PROFILE>_KEYSTORE, uppercased with '-' -> '_'; the profile
+          # is `release`, from --release below. Both variables or neither --
+          # a half-configured key is rejected rather than silently downgraded.
+          echo "CARGO_APK_RELEASE_KEYSTORE=$KS" >> "$GITHUB_ENV"
+
+      # `--lib` is load-bearing twice over. `cargo apk2 build` packages every
+      # artifact cargo hands it as a cdylib, and this crate has a [[bin]] as
+      # well as a [lib] -- without --lib it would also try to make an APK out of
+      # src/main.rs, which is the desktop entry point. It is also what makes the
+      # activity's `android.app.lib_name` come out as `spectroscope`, which is
+      # taken from the first artifact's name.
+      #
+      # No --target: the ABIs come from build_targets in
+      # [package.metadata.android], and both go into the one APK.
+      - name: Build the APK
+        run: cargo apk2 build --lib --release
+
+      # The tripwire, for the same reason as the lipo slice check in the macOS
+      # job. An APK missing an ABI installs perfectly on a phone of the other
+      # kind and fails for everyone else at install time; an unsigned APK
+      # installs nowhere at all. Neither shows up in the build log, so both are
+      # asserted rather than printed.
+      - name: Check the APK is signed and carries both ABIs
+        run: |
+          set -euo pipefail
+          APK=target/release/apk/SpectroScope.apk
+          ls -l "$APK"
+          for abi in arm64-v8a armeabi-v7a; do
+            unzip -l "$APK" | grep -q "lib/$abi/libspectroscope.so" \
+              || { echo "::error::the APK has no $abi slice"; exit 1; }
+          done
+          bt="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+          "$bt/apksigner" verify --print-certs "$APK"
+
+      # Stable, version-less name for the README's latest/download/ link, like
+      # every other asset here; the APK's own manifest still carries the
+      # version, read from [package] version.
+      - name: Stage stable-named APK
+        run: cp target/release/apk/SpectroScope.apk SpectroScope-android.apk
+
+      - name: Attach APK to release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: SpectroScope-android.apk
+
+  # Builds the macOS .app bundle and packages it into a .dmg.
+  #
+  # One job, one asset: a **universal** binary holding both the Apple Silicon
+  # and the Intel slice, so nobody has to know which Mac they have. Both slices
+  # are built on the arm64 runner — cross-compiling to another Apple arch *on*
+  # macOS is routine (the SDK ships every framework fat), and it means the
+  # x86_64 slice outlives the Intel runner image, which Apple has deprecated
+  # and Actions offers only through ~August 2027.
+  #
+  # Two costs, both accepted on purpose. The suite runs on this runner's own
+  # arch only, because executing x86_64 here would need Rosetta; the Intel
+  # slice is compiled and linked but not executed before release. And the job
+  # is all-or-nothing — one universal asset cannot be partly built, so an
+  # x86_64 failure costs the whole macOS release. That is the right way round:
+  # the alternative is shipping a file called "universal" with one slice in it,
+  # which is what the check below exists to prevent.
+  build-macos-dmg:
+    runs-on: macos-14
+    env:
+      # Both slices target what the Info.plist below claims
+      # (LSMinimumSystemVersion 11.0). Without this each target takes rustc's
+      # own default — 11.0 for arm64, 10.12 for x86_64 — and the binary would
+      # disagree with the bundle about the oldest macOS it supports.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # `rustup target add`, and NOT the toolchain action's `targets:` input.
+      # rust-toolchain.toml pins the channel to 1.96, so that is the toolchain
+      # every cargo call in this directory uses -- while the action's input
+      # would add the target to `stable`, the toolchain nothing here runs.
+      # `rustup target add` with no --toolchain resolves the active one through
+      # the same file, so it lands where cargo will look for it.
+      # Both halves of the universal binary, named explicitly rather than
+      # relying on the host default, which only ever gives one of them.
+      - name: Add both macOS targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      # Release-mode tests so the arm64 build below reuses these artifacts.
+      # This runner's own architecture only — see the note on the job.
+      - name: Run tests
+        run: cargo test --release --all-targets --target aarch64-apple-darwin
+
+      - name: Build release binaries (both architectures)
+        run: |
+          set -euo pipefail
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            echo "::group::$target"
+            cargo build --release --target "$target" --bin spectroscope
+            echo "::endgroup::"
+          done
+
+      # `lipo` glues the two Mach-O files into one fat binary; macOS picks the
+      # matching slice at exec and Rosetta never comes into it.
+      #
+      # Then checks that it really did. A universal binary that quietly lost a
+      # slice is the worst outcome available here: it builds, it signs, it
+      # installs, it runs perfectly on the machine that made it, and it fails
+      # for every Intel user with "cannot be opened". So the arch list is
+      # asserted rather than printed.
+      - name: Make the universal binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/universal
+          lipo -create -output target/universal/SpectroScope \
+            target/aarch64-apple-darwin/release/spectroscope \
+            target/x86_64-apple-darwin/release/spectroscope
+          archs="$(lipo -archs target/universal/SpectroScope)"
+          echo "slices: $archs"
+          for want in arm64 x86_64; do
+            case " $archs " in
+              *" $want "*) ;;
+              *) echo "::error::the universal binary has no $want slice (got: $archs)"
+                 exit 1 ;;
+            esac
+          done
+
+      # Assemble SpectroScope.app by hand (no cargo-bundle dependency):
+      # synthesize an Info.plist whose strings mirror
+      # [package.metadata.winres] from Cargo.toml, build an .icns from the
+      # committed PNGs, and drop the binary in MacOS/.
+      #
+      # No CFBundleDocumentTypes, unlike a viewer: SpectroScope opens no file
+      # type, so there is nothing for Launch Services to associate.
+      - name: Build .app bundle
+        shell: bash
+        env:
+          # Mirror of [package.metadata.winres] — edit both together.
+          PRODUCT_NAME: "SpectroScope"
+          # Matches [package.metadata.android] `package`, so the application
+          # has one identity across the two platforms that ask for one.
+          BUNDLE_ID: "cz.eutopia.spectroscope"
+          COPYRIGHT: "konung_yaropolk © 2026"
+          DESCRIPTION: "Spectrum analyzer for multiple SDR platforms"
+        run: |
+          set -euo pipefail
+          VERSION="$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import sys,json; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="spectroscope"))')"
+          echo "Building universal SpectroScope.app version $VERSION"
+
+          APP="SpectroScope.app"
+          rm -rf "$APP"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+
+          # The fat binary from the lipo step, so the bundle serves both arches.
+          cp "target/universal/SpectroScope" "$APP/Contents/MacOS/SpectroScope"
+          chmod +x "$APP/Contents/MacOS/SpectroScope"
+
+          # iconutil packs an .icns from an iconset assembled by copying the
+          # committed PNGs into Apple's slot names.
+          iconset="$(mktemp -d)/icon.iconset"; mkdir -p "$iconset"
+          cp icon/icon16.png   "$iconset/icon_16x16.png"
+          cp icon/icon32.png   "$iconset/icon_16x16@2x.png"
+          cp icon/icon32.png   "$iconset/icon_32x32.png"
+          cp icon/icon64.png   "$iconset/icon_32x32@2x.png"
+          cp icon/icon128.png  "$iconset/icon_128x128.png"
+          cp icon/icon256.png  "$iconset/icon_128x128@2x.png"
+          cp icon/icon256.png  "$iconset/icon_256x256.png"
+          cp icon/icon512.png  "$iconset/icon_256x256@2x.png"
+          cp icon/icon512.png  "$iconset/icon_512x512.png"
+          cp icon/icon1024.png "$iconset/icon_512x512@2x.png"
+          iconutil -c icns "$iconset" -o "$APP/Contents/Resources/SpectroScope.icns"
+          rm -rf "$iconset"
+
+          PLIST="$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Clear dict" "$PLIST" 2>/dev/null || true
+          add() { /usr/libexec/PlistBuddy -c "Add $1 $2 ${3:-}" "$PLIST"; }
+          add ":CFBundleName"                  string  "$PRODUCT_NAME"
+          add ":CFBundleDisplayName"           string  "$PRODUCT_NAME"
+          add ":CFBundleExecutable"            string  "SpectroScope"
+          add ":CFBundleIdentifier"            string  "$BUNDLE_ID"
+          add ":CFBundleIconFile"              string  "SpectroScope.icns"
+          add ":CFBundleShortVersionString"    string  "$VERSION"
+          add ":CFBundleVersion"               string  "$VERSION"
+          add ":CFBundlePackageType"           string  "APPL"
+          add ":CFBundleInfoDictionaryVersion" string  "6.0"
+          add ":CFBundleGetInfoString"         string  "$DESCRIPTION"
+          add ":NSHumanReadableCopyright"      string  "$COPYRIGHT"
+          add ":LSMinimumSystemVersion"        string  "11.0"
+          add ":NSHighResolutionCapable"       bool    true
+
+          plutil -lint "$PLIST"
+
+      # Ad-hoc code-sign so the app launches on the build arch without an
+      # "is damaged" Gatekeeper error from a totally unsigned bundle. This is
+      # NOT notarized — users on another Mac still need to right-click → Open
+      # (or `xattr -dr com.apple.quarantine`) the first time. Real notarization
+      # needs an Apple Developer ID certificate. One signature covers a fat
+      # binary: codesign signs each slice.
+      - name: Ad-hoc sign the app
+        run: codesign --force --deep --sign - "SpectroScope.app"
+
+      # Stage the .app in a clean folder with an /Applications symlink so the
+      # DMG opens showing the familiar "drag to Applications" layout, then
+      # build a compressed read-only image with hdiutil (first-party tooling).
+      - name: Create DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="dmg_stage"
+          rm -rf "$STAGE"; mkdir -p "$STAGE"
+          cp -R "SpectroScope.app" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          # "universal" rather than an architecture: one file, either Mac.
+          DMG="SpectroScope-universal.dmg"
+          rm -f "$DMG"
+          hdiutil create -volname "SpectroScope" \
+            -srcfolder "$STAGE" -fs HFS+ -format UDZO -imagekey zlib-level=9 \
+            "$DMG"
+          echo "DMG_NAME=$DMG" >> "$GITHUB_ENV"
+
+      - name: Attach DMG to release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: ${{ env.DMG_NAME }}

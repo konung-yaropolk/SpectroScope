@@ -1,0 +1,234 @@
+name: CI
+
+# Runs the test suite on pushes to main (and PRs targeting it), so the "tests"
+# badge reflects current health between releases rather than the state of the
+# last one. One job per OS, because each platform compiles code the others
+# never see: Windows = the winres build script and the static-CRT rustflags
+# from .cargo/config.toml, macOS = the Intel slice the universal .dmg needs,
+# Linux = the x11/wayland eframe features and the wasm bundle the Pages deploy
+# publishes. Without per-OS jobs a break behind another platform's gate stays
+# green until its release build fails.
+#
+# The toolchain is pinned by rust-toolchain.toml (1.96, with rustfmt, clippy and
+# the wasm32 target), so every job below gets the same compiler the developer
+# has and nothing needs a `targets:` line.
+#
+# build.rs embeds the committed icon/icon.ico into the .exe via winres; the
+# icons are pre-rendered from icon.svg by icon/generate-icons.bat and committed,
+# so nothing here rasterizes an SVG.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # Windows matches the released .exe: the wgpu/DX12 backend, the static CRT,
+  # and no system packages to install. It also carries the checks that are
+  # platform-independent — formatting and clippy — because running them three
+  # times would only ever find the same thing three times.
+  test:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all --check
+
+      # `--all-targets` so the tests, examples and benches are linted too, not
+      # just the library: the headless egui layout tests in src/app.rs are the
+      # part of this repo most likely to pick up a lint, and they are only
+      # compiled under `cfg(test)`.
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # wasm compiles a different half of several modules — the WebSocket
+      # transport in sources/rtl_tcp.rs, the "no filesystem" branch of the
+      # recording panel — and native clippy cannot reach any of it. Three
+      # wasm-only lints have already slipped through this gap once.
+      - name: Clippy (wasm)
+        run: cargo clippy --target wasm32-unknown-unknown --lib -- -D warnings
+
+      - name: Run tests
+        run: cargo test --all-targets
+
+      # The release .exe links the CRT statically (see .cargo/config.toml), so
+      # it must not import VCRUNTIME140.dll — that DLL is part of the Visual C++
+      # Redistributable rather than Windows, and a static import of a missing
+      # DLL stops the program *starting*, with a dialog naming a file the user
+      # has never heard of. A dependency bump can reintroduce it at any time and
+      # nothing else would notice, so the import table is read here rather than
+      # trusted. Release mode, because that is the binary people download.
+      # `--bin`, not a bare `cargo build`: the crate is also a `cdylib` (wasm
+      # and Android link against that half), and on Windows building it emits a
+      # spectroscope.dll that exports nothing, that the .exe does not use, and
+      # that nobody should ship. Naming the binary target skips it. The release
+      # job builds the same way for the same reason.
+      - name: Check the CRT really is static
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --bin spectroscope
+          python scripts/pe_imports.py target/release/spectroscope.exe \
+            --forbid VCRUNTIME --forbid api-ms-win-crt
+
+  # macOS compiles nothing platform-specific of our own, but it is the runner
+  # the release .dmg is built on, and that .dmg is a universal binary whose
+  # Intel half is cross-built and therefore never compiled anywhere else. The
+  # macOS release is all-or-nothing — one universal asset cannot be partly
+  # built — so an x86_64 failure costs the whole .dmg. Catching it here means
+  # that happens on a pull request instead of on a published release.
+  test-macos:
+    runs-on: macos-14
+    env:
+      # Both slices target what the release's Info.plist claims.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # `rustup target add`, and NOT the toolchain action's `targets:` input.
+      # rust-toolchain.toml pins the channel to 1.96, so that is the toolchain
+      # every cargo call in this directory uses -- while the action's input
+      # would add the target to `stable`, the toolchain nothing here runs.
+      # `rustup target add` with no --toolchain resolves the active one through
+      # the same file, so it lands where cargo will look for it.
+      - name: Add the Intel target
+        run: rustup target add x86_64-apple-darwin
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --all-targets
+
+      # A check, not a test run: executing x86_64 code here would need Rosetta,
+      # which is not a thing to depend on in CI. So this guards compile breakage
+      # only — an arch-specific *behaviour* difference would still reach the
+      # release untested, which is the standing cost of cross-building a slice.
+      - name: Check the Intel slice of the universal build compiles
+        run: cargo check --release --target x86_64-apple-darwin --bin spectroscope
+
+  # Linux compiles the target-gated x11/wayland eframe features, and builds the
+  # web bundle on the deploy's own operating system.
+  test-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      # The winit X11 / Wayland / xkbcommon stack and the GL headers. No GTK:
+      # the file dialog is `rfd` with the xdg-portal backend, which talks D-Bus
+      # from pure Rust and links no toolkit — unlike the GTK backend rfd
+      # defaults to.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libgl1-mesa-dev \
+            libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
+            libxkbcommon-dev libwayland-dev \
+            desktop-file-utils
+
+      - name: Run tests
+        run: cargo test --all-targets
+
+      # Every Linux package installs this one file, and a desktop entry that
+      # fails validation does not get a menu launcher — silently, on the user's
+      # machine, long after the release. A stray key or a category that needs a
+      # companion it has not got costs one second to catch here.
+      - name: Validate the desktop entry
+        run: desktop-file-validate packaging/spectroscope.desktop
+
+      # The deploy's own build, run before the merge instead of after it.
+      #
+      # The wasm steps in the Windows job are `cargo clippy`, which stops before
+      # codegen — so neither can see a bundle that compiles and then fails to
+      # *post-process*. That is a real gap: a module can compile, wasm-bindgen
+      # can add its externref table, and wasm-opt can then refuse to parse the
+      # result. deploy-web.yml runs only on a push to main, so nothing would
+      # notice until the merge had happened.
+      #
+      # Here rather than next to the other wasm steps on Windows, because
+      # wasm-pack downloads a different Binaryen asset per host and only the
+      # same OS, the same pinned wasm-pack and the same command make a guard.
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          # Pinned, never `latest`: with `latest` the action resolves the
+          # version through an unauthenticated GitHub API call and silently
+          # falls back to wasm-pack v0.9.1 (from 2020) when that call is rate
+          # limited — which fetches Binaryen 90, which cannot represent a module
+          # with more than one table and so cannot parse anything wasm-bindgen
+          # emits today. A deploy that breaks with no commit behind it.
+          version: v0.15.0
+      - name: Build the web bundle the way the deploy does
+        run: wasm-pack build --target web --out-dir pkg --release
+
+  # Android is the fourth half of this codebase, and until recently the only
+  # one nothing ever compiled: `android_main` in src/lib.rs is behind
+  # `cfg(target_os = "android")`, so every other job walks straight past it, and
+  # the first thing that would have noticed a break was the release .apk.
+  #
+  # `cargo check` and not a build, because a check never links — so this job
+  # needs the target's `std` and nothing else, no SDK, no NDK, no JDK, and
+  # finishes in a couple of minutes. It will not catch a linker or packaging
+  # problem; it does catch every one of the three that were actually there
+  # (rfd has no Android backend, eframe re-exports no winit, and accesskit is
+  # a compile error alongside android-native-activity).
+  #
+  # Both ABIs the release .apk ships, because the two differ in pointer width
+  # and a 32-bit-only break is a real one.
+  check-android:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # `rustup target add`, and NOT the toolchain action's `targets:` input.
+      # rust-toolchain.toml pins the channel to 1.96, so that is the toolchain
+      # every cargo call in this directory uses -- while the action's input
+      # would add the target to `stable`, the toolchain nothing here runs.
+      # `rustup target add` with no --toolchain resolves the active one through
+      # the same file, so it lands where cargo will look for it.
+      - name: Add the Android targets
+        run: rustup target add aarch64-linux-android armv7-linux-androideabi
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Nothing an Android cross-check produces is shareable with the
+          # x86_64 jobs, so it gets its own key rather than thrashing theirs.
+          key: android
+
+      # `--lib` only: src/main.rs is the desktop entry point and is not part of
+      # an Android build, which loads the cdylib from a NativeActivity instead.
+      - name: Check both Android ABIs
+        run: |
+          set -euo pipefail
+          for target in aarch64-linux-android armv7-linux-androideabi; do
+            echo "::group::$target"
+            cargo clippy --target "$target" --lib -- -D warnings
+            echo "::endgroup::"
+          done

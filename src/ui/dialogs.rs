@@ -573,17 +573,21 @@ fn color_button(ui: &mut egui::Ui, color: &mut Rgba8) {
     }
 }
 
-/// Native file chooser. Returns `None` on the web, where picking a path is
-/// meaningless -- the user types or drops a file instead.
+/// Native file chooser. Returns `None` on the web and on Android, where
+/// picking a path is meaningless -- the user types one instead.
+///
+/// This one picks a *backend executable*, which is the clearest case of the
+/// two: neither platform can spawn a helper process at all, so there would be
+/// nothing to do with the path even if there were a chooser to produce it.
 fn pick_file(title: &str) -> Option<String> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
     {
         rfd::FileDialog::new()
             .set_title(title)
             .pick_file()
             .map(|p| p.to_string_lossy().into_owned())
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
     {
         let _ = title;
         None

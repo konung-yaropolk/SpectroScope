@@ -1,0 +1,23 @@
+# Dependabot version updates.
+#
+# Quarterly rather than weekly: this is a GUI application pinned to one egui /
+# wgpu generation, and a stream of patch bumps for crates deep in that tree
+# costs more review than it buys. A real security advisory is reported
+# separately by Dependabot alerts, which this schedule does not slow down.
+#
+# See https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "quarterly"
+
+  # The workflows pin every action to a major version, and a pinned action that
+  # has gone stale is its own kind of breakage — jetli/wasm-pack-action's
+  # `latest` fallback is the cautionary tale this repo already carries a comment
+  # about. Same cadence.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "quarterly"

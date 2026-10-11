@@ -1,0 +1,35 @@
+# Desktop menu entry for the Linux packages (Arch PKGBUILD, and any distro
+# package that installs it to /usr/share/applications/spectroscope.desktop).
+#
+# `desktop-file-validate` is run on this file in CI, so every key here has to be
+# one the XDG Desktop Entry spec knows, with a value of the right type.
+[Desktop Entry]
+Type=Application
+Name=SpectroScope
+GenericName=Spectrum Analyzer
+Comment=Spectrum analyzer for multiple SDR platforms
+# No `%F`/`%U` field code: SpectroScope opens no document type. Its only
+# arguments are --debug/--help/--version (see src/main.rs), and sweeps are
+# started from the GUI, so a file manager has nothing to hand it. Claiming
+# `%F` without a MimeType would only invite desktops to pass paths the app
+# then silently ignores.
+Exec=spectroscope
+# Resolved against the icon theme, not the filesystem: the package installs
+# icon/icon{16,32,48,64,128,256}.png as hicolor .../apps/spectroscope.png.
+Icon=spectroscope
+Terminal=false
+# `Network` is the Main category that makes this entry appear in a menu at all,
+# and it is also one of the two categories the spec requires alongside the
+# `HamRadio` Additional category (Audio being the other, which does not fit a
+# measurement tool). `Science` is a Main category in its own right and needs no
+# companion; it is what puts SpectroScope next to other instrument software.
+Categories=Network;HamRadio;Science;
+# Free-form search terms, so the entry is findable by hardware and by what the
+# app actually shows rather than only by its name.
+Keywords=SDR;radio;spectrum;analyzer;waterfall;FFT;RTL-SDR;HackRF;SoapySDR;
+# Matches `APP_ID` in src/lib.rs, which eframe passes to winit as the Wayland
+# app_id and the X11 WM_CLASS. The basename of this file already matches, but
+# stating it keeps the taskbar grouping and icon lookup correct on desktops
+# that only consult this key.
+StartupWMClass=spectroscope
+StartupNotify=true

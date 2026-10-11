@@ -26,6 +26,16 @@ const LOG_CAPACITY: usize = 500;
 /// drained frame also requests another repaint.
 const MAX_FRAMES_PER_REPAINT: usize = 8;
 
+/// Share of the window the controls panel takes on a first run.
+const PANEL_WIDTH_FRACTION: f32 = 0.20;
+
+/// Narrowest the controls panel may be dragged, in points.
+///
+/// Not a taste call: it is what the widest row in the panel measures once
+/// every combo has given back the width it does not need. The test
+/// `the_side_panel_keeps_the_width_it_is_dragged_to` is what holds it true.
+const MIN_PANEL_WIDTH: f32 = 190.0;
+
 pub struct SpectroScopeApp {
     cfg: Config,
     storage: DataStorage,
@@ -578,10 +588,20 @@ impl SpectroScopeApp {
     }
 
     fn side_panel(&mut self, ctx: &egui::Context) {
+        // A fifth of the window rather than a fixed number of points. A fixed
+        // default is wrong at both ends: a sliver on a 4K display, half the
+        // spectrum on a small laptop. Only the *default* -- egui persists
+        // whatever width it is dragged to, so this is what a first run gets.
+        //
+        // The upper bound follows the window for the same reason, and the
+        // lower one does not: 190 is what the contents actually need, and no
+        // window being narrow makes them need less.
+        let window = ctx.screen_rect().width();
+        let (min, max) = (MIN_PANEL_WIDTH, (window * 0.5).max(MIN_PANEL_WIDTH));
         egui::SidePanel::right("spectroscope.controls")
             .resizable(true)
-            .default_width(260.0)
-            .width_range(190.0..=520.0)
+            .default_width((window * PANEL_WIDTH_FRACTION).clamp(min, max))
+            .width_range(min..=max)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     self.controls_section(ui, ctx);
@@ -1234,6 +1254,12 @@ fn human_bytes(bytes: u64) -> String {
 }
 
 /// Native save dialog.
+///
+/// Android is a `not(wasm32)` target but has no dialog: `rfd` has no backend
+/// there, and the platform's own chooser hands back a `content://` URI rather
+/// than a path anything here could open. Recording and image export stay
+/// reachable on Android by typing a path, which is why the signature does not
+/// change -- only the body.
 #[cfg(not(target_arch = "wasm32"))]
 fn save_file_dialog(
     title: &str,
@@ -1241,6 +1267,12 @@ fn save_file_dialog(
     filters: &[(&str, &[&str])],
     default_ext: &str,
 ) -> Option<String> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = (title, current, filters, default_ext);
+        None
+    }
+    #[cfg(not(target_os = "android"))]
     {
         let mut dialog = rfd::FileDialog::new().set_title(title);
         for (name, exts) in filters {
@@ -1385,9 +1417,28 @@ mod tests {
         probe_panel(cfg, width, move |app, ctx| {
             egui::SidePanel::right("spectroscope.controls")
                 .resizable(true)
-                .width_range(190.0..=520.0)
+                .width_range(MIN_PANEL_WIDTH..=520.0)
                 .show(ctx, |ui| section(app, ui));
         })
+    }
+
+    /// The width a first run gets in a `window`-wide window: no stored panel
+    /// state, so `default_width` is what decides.
+    fn first_run_panel_width(window: f32) -> f32 {
+        let ctx = egui::Context::default();
+        let mut app = SpectroScopeApp::build(&ctx, Config::default(), None);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(window, 700.0),
+            )),
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| app.side_panel(ctx));
+        egui::panel::PanelState::load(&ctx, egui::Id::new("spectroscope.controls"))
+            .expect("the panel stores its state")
+            .rect
+            .width()
     }
 
     fn probe_panel(
@@ -1441,6 +1492,47 @@ mod tests {
                 (got - width).abs() <= 1.0,
                 "asked for {width}, panel claimed {got}"
             );
+        }
+    }
+
+    /// A first run gets a fifth of the window, not a fixed number of points.
+    #[test]
+    fn the_panel_defaults_to_a_fifth_of_the_window() {
+        for window in [1280.0f32, 1920.0, 2560.0, 3840.0] {
+            let got = first_run_panel_width(window);
+            let want = window * PANEL_WIDTH_FRACTION;
+            assert!(
+                (got - want).abs() <= 1.0,
+                "{window} wide window: wanted {want}, panel took {got}"
+            );
+        }
+    }
+
+    /// ...except where a fifth would be narrower than the contents, which is
+    /// every window below about 950 points -- a real case on a laptop with the
+    /// window not maximised.
+    #[test]
+    fn a_narrow_window_still_gets_a_usable_panel() {
+        for window in [480.0f32, 700.0, 900.0] {
+            let got = first_run_panel_width(window);
+            assert!(
+                got >= MIN_PANEL_WIDTH - 1.0 && got <= window,
+                "{window} wide window: panel took {got}"
+            );
+        }
+    }
+
+    /// And a window narrower than the panel's own minimum must not panic.
+    ///
+    /// Not hypothetical: a web canvas is a few pixels wide for the first frame
+    /// or two while the page sizes it, and the vertical split used to abort
+    /// the whole application there. egui panics on an inverted `Rangef`, which
+    /// is exactly what a naive `min..=window * 0.5` would produce here.
+    #[test]
+    fn an_absurdly_narrow_window_does_not_panic() {
+        for window in [0.0f32, 1.0, 50.0, 189.0, MIN_PANEL_WIDTH] {
+            let got = first_run_panel_width(window);
+            assert!(got.is_finite() && got >= 0.0, "{window} -> {got}");
         }
     }
 

@@ -1,0 +1,163 @@
+# Flatpak manifest for SpectroScope (Linux, wgpu renderer).
+#
+# Built by the build-flatpak job in .github/workflows/release.yml. Because the
+# flatpak-builder sandbox has no network during the build, the job first runs
+# flatpak-cargo-generator on Cargo.lock to produce `generated-sources.json` (the
+# offline crate vendoring referenced under `sources:` below) -- so that file
+# won't exist in a fresh checkout; generate it before building locally:
+#     python3 flatpak-cargo-generator.py Cargo.lock -o generated-sources.json
+#
+# App ID uses the reverse-DNS `io.github.<user>` form (GitHub username's hyphen
+# becomes an underscore -- Flatpak IDs disallow hyphens). It must match the
+# basenames of the exported .desktop / .metainfo / icon files.
+id: io.github.konung_yaropolk.SpectroScope
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+# The binary is lowercase `spectroscope` (see [[bin]] in Cargo.toml), so the
+# command, the /app/bin name and <provides><binary> all agree without any of
+# the case juggling a capitalised binary would need.
+command: spectroscope
+
+finish-args:
+  # Shared SysV IPC is what lets the X11 path use MIT-SHM; without it an X11
+  # session still works but pushes every frame over the socket instead.
+  - --share=ipc
+  # winit is not pinned to a backend here (unlike some other projects of mine):
+  # Cargo.toml enables eframe's `wayland` *and* `x11` features, so winit takes
+  # Wayland when the session offers it and X11 otherwise. Both sockets are
+  # therefore needed. `fallback-x11` rather than plain `x11` means the X server
+  # is only exposed when there is no Wayland session to use instead.
+  - --socket=wayland
+  - --socket=fallback-x11
+  # wgpu is the *only* renderer in this build -- there is no OpenGL/glow
+  # fallback to limp along on -- so the GPU render node is not an optimisation
+  # but a hard startup requirement: with no /dev/dri, wgpu enumerates no
+  # adapter and the app dies before it ever opens a window. Vulkan is preferred
+  # and GLES/EGL is the fallback; both arrive through this one device.
+  #
+  # Deliberately *not* `--device=all`: the desktop build never speaks to an SDR
+  # over USB itself. It either opens a TCP socket (rtl_tcp) or spawns a helper
+  # program that owns the device, so raw USB access would be permission we have
+  # no code to use. (The Android build is the one that wants USB host.)
+  - --device=dri
+  # The rtl_tcp backend is a plain TCP client, and it is the backend that needs
+  # no helper binary -- i.e. the one that actually works in this sandbox, so it
+  # had better be able to connect. This matters even for a server on the same
+  # machine: without --share=network the app gets its own network namespace,
+  # where 127.0.0.1 is the sandbox's loopback and not the host's, so a local
+  # `rtl_tcp -a 127.0.0.1` would be unreachable.
+  - --share=network
+  # SpectroScope is not a read-only viewer: it *writes* recordings (.bin/.csv)
+  # and exported images (ImageJ TIFF / PNG), and reads baseline files back.
+  #
+  # The xdg-desktop-portal file dialog (rfd's `xdg-portal` backend -- note no
+  # GTK3 dependency) hands back a document-portal path that is readable and
+  # writable without any static permission, so a one-off "Save as..." would
+  # need nothing here. Two things do:
+  #   * the output path is also a plain text field the user can type into, and
+  #     a typed path is a real host path that never passed through the portal;
+  #   * a document-portal path is per-session, so a path kept from a previous
+  #     run resolves only if the real one is reachable.
+  # Read-write is unavoidable for the same reason (`host:ro` would let the app
+  # offer to record and then fail at File::create). `home` rather than `host`
+  # keeps system directories out of reach; a user who records onto an external
+  # drive can widen it themselves with
+  #     flatpak override --user --filesystem=/run/media io.github.konung_yaropolk.SpectroScope
+  - --filesystem=home
+  # NOT granted, on purpose -- and worth spelling out, because it is the one
+  # real functional hole in the Flatpak build:
+  #
+  #   - --talk-name=org.freedesktop.Flatpak
+  #
+  # Five of the seven backends (soapy_power, hackrf_sweep, rtl_power,
+  # rtl_power_fftw, rx_power) work by spawning an external sweep program that
+  # lives on the *host* -- including whatever executable the user points at in
+  # Settings. Inside the sandbox /usr is the freedesktop runtime, so those
+  # programs are simply not there, and their own dependencies (SoapySDR,
+  # python, librtlsdr) are not either. Granting the name above would let a
+  # process escape to the host via `flatpak-spawn --host`, but SpectroScope
+  # does not call flatpak-spawn, so it would buy nothing while handing the app
+  # the keys to the host -- hence left out rather than quietly enabled.
+  #
+  # Net effect: in a Flatpak install the `rtl_tcp` and `demo` backends work
+  # fully (rtl_tcp talks to a server on the host or the network, which is the
+  # supported way to use real hardware here); the helper-based backends do not.
+  # Users who need those should take the AppImage, .deb/.rpm or PKGBUILD build.
+
+modules:
+  - name: spectroscope
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        # Cargo reads the vendored-sources config that generated-sources.json
+        # drops here; the build dir is /run/build/<module-name>, so this path
+        # and the `name:` above have to be kept in step.
+        CARGO_HOME: /run/build/spectroscope/cargo
+    # Export the .desktop / icons / metainfo under the app ID so the desktop
+    # entry and its icon are picked up. The committed .desktop uses
+    # `Icon=spectroscope`; rewrite it to the app ID the exported icon is named
+    # by.
+    #
+    # SpectroScope is a single crate, not a workspace, so every path below is
+    # relative to the repo root with no crate subdirectory in front of it, and
+    # the build needs neither `-p` nor a feature list: one plain release build
+    # of the default features is exactly the desktop binary we ship.
+    build-commands:
+      # `--bin`: the crate is also a `cdylib` (wasm and Android link that
+      # half), and building it here would produce a libspectroscope.so that
+      # exports nothing and that nothing in the bundle loads.
+      - cargo --offline build --release --bin spectroscope
+      - install -Dm755 target/release/spectroscope /app/bin/spectroscope
+      - install -Dm644 packaging/spectroscope.desktop /app/share/applications/io.github.konung_yaropolk.SpectroScope.desktop
+      - sed -i 's/^Icon=.*/Icon=io.github.konung_yaropolk.SpectroScope/' /app/share/applications/io.github.konung_yaropolk.SpectroScope.desktop
+      # eframe is handed APP_ID ("spectroscope", src/lib.rs) as the app name, and
+      # winit turns that into the Wayland app_id / X11 WM_CLASS. A shell only
+      # matches a window to its launcher entry when that string equals the
+      # desktop file's basename, which here it cannot -- the file has to be
+      # named after the Flatpak app ID. StartupWMClass bridges the two, so the
+      # running window keeps its icon and groups under the right launcher
+      # instead of showing up as a second, nameless entry. Deleted first so the
+      # key cannot end up duplicated if the committed .desktop grows one.
+      - sed -i '/^StartupWMClass=/d' /app/share/applications/io.github.konung_yaropolk.SpectroScope.desktop
+      - printf 'StartupWMClass=spectroscope\n' >> /app/share/applications/io.github.konung_yaropolk.SpectroScope.desktop
+      # The PNG sizes hicolor actually indexes. icon1024.png is left out
+      # because hicolor tops out at 512x512 and an unindexed directory is dead
+      # weight in the export; the SVG covers everything above 512 instead, and
+      # being scalable it is also what a HiDPI shell prefers to rescale.
+      - install -Dm644 icon/icon512.png /app/share/icons/hicolor/512x512/apps/io.github.konung_yaropolk.SpectroScope.png
+      - install -Dm644 icon/icon256.png /app/share/icons/hicolor/256x256/apps/io.github.konung_yaropolk.SpectroScope.png
+      - install -Dm644 icon/icon128.png /app/share/icons/hicolor/128x128/apps/io.github.konung_yaropolk.SpectroScope.png
+      - install -Dm644 icon/icon64.png /app/share/icons/hicolor/64x64/apps/io.github.konung_yaropolk.SpectroScope.png
+      - install -Dm644 icon/icon48.png /app/share/icons/hicolor/48x48/apps/io.github.konung_yaropolk.SpectroScope.png
+      - install -Dm644 icon/icon32.png /app/share/icons/hicolor/32x32/apps/io.github.konung_yaropolk.SpectroScope.png
+      - install -Dm644 icon/icon16.png /app/share/icons/hicolor/16x16/apps/io.github.konung_yaropolk.SpectroScope.png
+      - install -Dm644 icon/icon.svg /app/share/icons/hicolor/scalable/apps/io.github.konung_yaropolk.SpectroScope.svg
+      - install -Dm644 packaging/flatpak/io.github.konung_yaropolk.SpectroScope.metainfo.xml /app/share/metainfo/io.github.konung_yaropolk.SpectroScope.metainfo.xml
+    # No MIME-type icon and no MimeType= handling anywhere in this manifest,
+    # because SpectroScope opens no document type: it has no file arguments at
+    # all (main.rs accepts only --version/--help/--debug) and its recordings and
+    # exports are things it writes, not things a file manager should hand it.
+    sources:
+      # The whole repo. One level shallower than a workspace layout would be:
+      # this file sits at <repo>/packaging/flatpak/, so two `..` reach the root
+      # (a crate-in-subdirectory project would need three). build-dir/repo live
+      # outside the checkout in CI, so there is no recursion -- locally,
+      # `target/` and `pkg/` get copied along with everything else, which is
+      # only a matter of time and disk, not correctness.
+      - type: dir
+        path: ../..
+      # Vendored crates + cargo config, generated from Cargo.lock in CI.
+      #
+      # The repo's own .cargo/config.toml comes along in that copy, but it only
+      # sets `+crt-static` rustflags for the three *-pc-windows-* targets, so it
+      # is inert here and does not collide with the vendored-sources config.
+      # rust-toolchain.toml is ignored too: the SDK extension provides real
+      # cargo/rustc binaries rather than rustup shims, so nothing tries to
+      # fetch the pinned channel -- which is just as well, since there is no
+      # network. It does mean the SDK's rustc has to satisfy the crate's
+      # rust-version (1.85); freedesktop 25.08's rust-stable is well past that.
+      - generated-sources.json
