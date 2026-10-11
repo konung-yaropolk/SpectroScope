@@ -84,6 +84,22 @@ impl SpectrumPlot {
         }
     }
 
+    /// True when the cached curves no longer match the visible range.
+    ///
+    /// Decimation is done against the view, so panning or zooming invalidates
+    /// it just as new data does. Without this the curves stay clipped to the
+    /// old window until the next sweep lands -- a whole second at one sweep
+    /// per second, which reads as the trace flickering as you zoom.
+    pub fn needs_resync(&self) -> bool {
+        self.view_dirty
+    }
+
+    /// First and last x of the cached main curve.
+    #[cfg(test)]
+    pub fn main_span(&self) -> Option<(f64, f64)> {
+        Some((self.main.first()?[0], self.main.last()?[0]))
+    }
+
     /// Fit the axes to the whole sweep on the next frame.
     pub fn request_refit(&mut self) {
         self.reset_view = true;
@@ -332,9 +348,6 @@ impl SpectrumPlot {
                 // same hazard and the Qt build passed `ignoreBounds=True`; here
                 // the crosshair is drawn in screen space after the plot closes.
                 self.readout = pu.pointer_coordinate().map(|p| (p.x, p.y));
-
-                let bounds = pu.plot_bounds();
-                (bounds.min()[0], bounds.max()[0])
             });
 
         if let Some(pos) = response.response.hover_pos() {
@@ -359,7 +372,14 @@ impl SpectrumPlot {
             self.readout = None;
         }
 
-        let (vx0, vx1) = response.inner;
+        // Read the range off the transform, not with `plot_bounds()` inside
+        // the closure: egui_plot queues a `set_plot_bounds` and applies it
+        // after the closure returns, so the closure's own reading is a frame
+        // behind every time the view is moved from code. The transform handed
+        // back is the one that includes the change, which is what keeps the
+        // waterfall on the same range as the plot in the frame of a zoom.
+        let bounds = response.transform.bounds();
+        let (vx0, vx1) = (bounds.min()[0], bounds.max()[0]);
         self.view_x = (vx0, vx1);
         self.plot_rect = Some(*response.transform.frame());
 

@@ -73,10 +73,22 @@ impl SpectroScopeApp {
         cfg.migrate();
         cfg.clamp_to(&cfg.source().info().limits);
 
-        let mut waterfall = Waterfall::new(cc.wgpu_render_state.clone());
+        Self::build(&cc.egui_ctx, cfg, cc.wgpu_render_state.clone())
+    }
+
+    /// Everything in [`Self::new`] that does not need an eframe context.
+    ///
+    /// Split out so the layout can be exercised in a plain `egui::Context`,
+    /// where there is neither storage nor a GPU.
+    fn build(
+        egui_ctx: &egui::Context,
+        cfg: Config,
+        render_state: Option<eframe::egui_wgpu::RenderState>,
+    ) -> Self {
+        let mut waterfall = Waterfall::new(render_state);
         waterfall.set_colormap(cfg.levels.lut(), cfg.levels.reverse);
 
-        apply_theme(&cc.egui_ctx, cfg.dark_mode);
+        apply_theme(egui_ctx, cfg.dark_mode);
 
         let source = cfg.source();
         let now = now_monotonic();
@@ -569,7 +581,7 @@ impl SpectroScopeApp {
         egui::SidePanel::right("spectroscope.controls")
             .resizable(true)
             .default_width(260.0)
-            .width_range(220.0..=460.0)
+            .width_range(190.0..=520.0)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     self.controls_section(ui, ctx);
@@ -589,44 +601,45 @@ impl SpectroScopeApp {
         egui::CollapsingHeader::new("Controls")
             .default_open(true)
             .show(ui, |ui| {
-                // One button that reports the state it will leave you in,
-                // rather than two of which one is always dead.
-                let label = if self.running { "Stop" } else { "Start" };
-                if ui
-                    .add(
-                        egui::Button::new(label)
-                            .min_size(egui::vec2(ui.available_width(), 28.0)),
-                    )
-                    .clicked()
-                {
-                    if self.running {
-                        self.stop();
-                    } else {
-                        self.start(ctx, false);
-                    }
-                }
-                if ui
-                    .add_enabled(
-                        !self.running,
-                        egui::Button::new("Single shot")
-                            .min_size(egui::vec2(ui.available_width(), 24.0)),
-                    )
-                    .clicked()
-                {
-                    self.start(ctx, true);
-                }
-                if ui
-                    .add(
-                        egui::Button::new("Reset view")
-                            .min_size(egui::vec2(ui.available_width(), 24.0)),
-                    )
-                    .on_hover_text(
-                        "Fit the spectrum to the sweep and return the waterfall to the newest                          sweep at its default scale",
-                    )
-                    .clicked()
-                {
-                    self.reset_view();
-                }
+                // Justified, so the buttons stretch to the panel without
+                // reporting that width as a minimum they need.
+                ui.with_layout(
+                    egui::Layout::top_down_justified(egui::Align::Center),
+                    |ui| {
+                        // One button that reports the state it will leave you in,
+                        // rather than two of which one is always dead.
+                        let label = if self.running { "Stop" } else { "Start" };
+                        if ui
+                            .add(egui::Button::new(label).min_size(egui::vec2(0.0, 28.0)))
+                            .clicked()
+                        {
+                            if self.running {
+                                self.stop();
+                            } else {
+                                self.start(ctx, false);
+                            }
+                        }
+                        if ui
+                            .add_enabled(
+                                !self.running,
+                                egui::Button::new("Single shot").min_size(egui::vec2(0.0, 24.0)),
+                            )
+                            .clicked()
+                        {
+                            self.start(ctx, true);
+                        }
+                        if ui
+                            .add(egui::Button::new("Reset view").min_size(egui::vec2(0.0, 24.0)))
+                            .on_hover_text(
+                                "Fit the spectrum to the sweep and return the waterfall \
+                         to the newest sweep at its default scale",
+                            )
+                            .clicked()
+                        {
+                            self.reset_view();
+                        }
+                    },
+                );
             });
     }
 
@@ -826,7 +839,8 @@ impl SpectroScopeApp {
                     let current = crate::bandplan::find(&self.cfg.band_plan);
                     egui::ComboBox::from_id_salt("bandplan.region")
                         .selected_text(current.label)
-                        .width(ui.available_width())
+                        .truncate()
+                        .width(crate::ui::combo_width(ui, 180.0))
                         .show_ui(ui, |ui| {
                             for plan in crate::bandplan::plans() {
                                 // "None" is what the checkbox above is for.
@@ -867,16 +881,14 @@ impl SpectroScopeApp {
                 // nothing to point a recorder at; saying so beats offering
                 // controls whose file picker can only ever return nothing.
                 #[cfg(target_arch = "wasm32")]
-                {
-                    ui.label(
-                        egui::RichText::new(
-                            "Recording and image export need a filesystem, so they are                              only available in the desktop build.",
-                        )
-                        .small()
-                        .weak(),
-                    );
-                    return;
-                }
+                ui.label(
+                    egui::RichText::new(
+                        "Recording and image export need a filesystem, so \
+                         they are only available in the desktop build.",
+                    )
+                    .small()
+                    .weak(),
+                );
 
                 #[cfg(not(target_arch = "wasm32"))]
                 self.recording_controls(ui);
@@ -889,32 +901,38 @@ impl SpectroScopeApp {
 
         ui.horizontal(|ui| {
             ui.label("File:");
-            ui.add_enabled(
-                !recording,
-                egui::TextEdit::singleline(&mut self.cfg.record_file)
-                    .desired_width(ui.available_width() - 32.0),
-            );
-            if ui
-                .add_enabled(!recording, egui::Button::new("..."))
-                .clicked()
-            {
-                let ext = self.cfg.record_format.extension();
-                if let Some(p) = save_file_dialog(
-                    "Record sweeps to",
-                    &self.cfg.record_file,
-                    &[("Sweep data", &[ext])],
-                    ext,
-                ) {
-                    self.cfg.record_file = p;
+            // Right-to-left so the browse button reserves its own space and
+            // the field takes exactly what is left, instead of the row
+            // overflowing and dragging the panel wider every frame.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add_enabled(!recording, egui::Button::new("..."))
+                    .clicked()
+                {
+                    let ext = self.cfg.record_format.extension();
+                    if let Some(p) = save_file_dialog(
+                        "Record sweeps to",
+                        &self.cfg.record_file,
+                        &[("Sweep data", &[ext])],
+                        ext,
+                    ) {
+                        self.cfg.record_file = p;
+                    }
                 }
-            }
+                ui.add_enabled(
+                    !recording,
+                    egui::TextEdit::singleline(&mut self.cfg.record_file)
+                        .desired_width(ui.available_width().max(24.0)),
+                );
+            });
         });
 
         ui.horizontal(|ui| {
             ui.label("Format:");
             egui::ComboBox::from_id_salt("record.format")
                 .selected_text(self.cfg.record_format.label())
-                .width(190.0)
+                .truncate()
+                .width(crate::ui::combo_width(ui, 190.0))
                 .show_ui(ui, |ui| {
                     for f in crate::data::RecordFormat::ALL {
                         ui.add_enabled_ui(!recording, |ui| {
@@ -930,7 +948,7 @@ impl SpectroScopeApp {
             "Record"
         };
         if ui
-            .add(egui::Button::new(label).min_size(egui::vec2(ui.available_width(), 24.0)))
+            .add(egui::Button::new(label).min_size(egui::vec2(0.0, 24.0)))
             .on_hover_text(
                 "Sweeps are appended and flushed one at a time, so an interrupted \
                          recording still opens",
@@ -972,8 +990,7 @@ impl SpectroScopeApp {
         if ui
             .add_enabled(
                 have_history,
-                egui::Button::new("Save waterfall...")
-                    .min_size(egui::vec2(ui.available_width(), 24.0)),
+                egui::Button::new("Save waterfall...").min_size(egui::vec2(0.0, 24.0)),
             )
             .on_hover_text("Write the stored history as a PNG or TIFF, one pixel per bin")
             .clicked()
@@ -989,7 +1006,9 @@ impl SpectroScopeApp {
         }
         ui.checkbox(&mut self.cfg.annotate_tiff, "Label the TIFF too")
             .on_hover_text(
-                "Draw the ruler and band plan into a saved TIFF as well. They go in at                  the display window's own extremes so the colour map paints them -- but                  they do overwrite those pixels, which the PNG does not.",
+                "Draw the ruler and band plan into a saved TIFF as well. They go \
+                 in at the display window's own extremes so the colour map paints \
+                 them -- but they do overwrite those pixels, which the PNG does not.",
             );
 
         if have_history {
@@ -1143,7 +1162,8 @@ impl eframe::App for SpectroScopeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let backend_before = self.cfg.backend.clone();
         let updated = self.pump_events();
-        if updated.any() {
+        // Also when only the view moved: the curves are decimated against it.
+        if updated.any() || self.spectrum.needs_resync() {
             self.spectrum.sync(&self.storage, updated);
         }
 
@@ -1315,6 +1335,207 @@ pub fn window_title() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Lay the side panel out at `width` and report the width it claims back.
+    ///
+    /// egui stores a panel's width from the rect its *contents* ended up
+    /// needing, so a row that cannot shrink is a floor the panel springs back
+    /// to. Two passes, because the first is what the second reads.
+    fn panel_width_after_laying_out_at(width: f32) -> f32 {
+        panel_width_with(Config::default(), width)
+    }
+
+    fn panel_width_with(cfg: Config, width: f32) -> f32 {
+        probe_panel(cfg, width, |app, ctx| app.side_panel(ctx))
+    }
+
+    /// The longest text the panel can be made to show: the widest colour map
+    /// name, the widest band plan label, the longer record format and a path
+    /// that will not fit in any panel.
+    fn worst_case_config() -> Config {
+        let mut cfg = Config::default();
+        cfg.levels.colormap = crate::colormap::NAMES
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, n)| n.len())
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        if let Some(plan) = crate::bandplan::plans()
+            .iter()
+            .max_by_key(|p| p.label.len())
+        {
+            cfg.band_plan = plan.id.to_owned();
+        }
+        cfg.show_band_plan = true;
+        cfg.record_format = crate::data::RecordFormat::ALL
+            .into_iter()
+            .max_by_key(|f| f.label().len())
+            .unwrap_or(cfg.record_format);
+        cfg.record_file = format!("C:/{}/sweeps.bin", "a-very-long-directory-name/".repeat(8));
+        cfg
+    }
+
+    /// As above, but for one section shown on its own, so a collapsed one can
+    /// still be measured.
+    fn section_width_at(
+        cfg: Config,
+        width: f32,
+        mut section: impl FnMut(&mut SpectroScopeApp, &mut egui::Ui),
+    ) -> f32 {
+        probe_panel(cfg, width, move |app, ctx| {
+            egui::SidePanel::right("spectroscope.controls")
+                .resizable(true)
+                .width_range(190.0..=520.0)
+                .show(ctx, |ui| section(app, ui));
+        })
+    }
+
+    fn probe_panel(
+        cfg: Config,
+        width: f32,
+        mut show: impl FnMut(&mut SpectroScopeApp, &egui::Context),
+    ) -> f32 {
+        let ctx = egui::Context::default();
+        let id = egui::Id::new("spectroscope.controls");
+        let mut app = SpectroScopeApp::build(&ctx, cfg, None);
+
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1000.0, 700.0),
+            )),
+            ..Default::default()
+        };
+
+        for _ in 0..2 {
+            // Pretend the user just dragged the edge to `width`.
+            ctx.data_mut(|d| {
+                d.insert_persisted(
+                    id,
+                    egui::panel::PanelState {
+                        rect: egui::Rect::from_min_size(
+                            egui::pos2(1000.0 - width, 0.0),
+                            egui::vec2(width, 700.0),
+                        ),
+                    },
+                )
+            });
+            let _ = ctx.run(input.clone(), |ctx| show(&mut app, ctx));
+        }
+
+        egui::panel::PanelState::load(&ctx, id)
+            .expect("the panel stores its state")
+            .rect
+            .width()
+    }
+
+    #[test]
+    fn the_side_panel_keeps_the_width_it_is_dragged_to() {
+        // The bug: a row demanding more than the panel offered (a fixed-width
+        // combo, or a text field asking for the full width *next to* a button)
+        // was written back as the panel's width, so every drag inwards sprang
+        // straight back out again.
+        for width in [190.0f32, 220.0, 260.0, 400.0] {
+            let got = panel_width_after_laying_out_at(width);
+            assert!(
+                (got - width).abs() <= 1.0,
+                "asked for {width}, panel claimed {got}"
+            );
+        }
+    }
+
+    /// The same, with every selectable label at its longest. A combo sizes
+    /// itself to its selected text unless told to truncate, so "Magma" fitting
+    /// says nothing about the widest colour map in the list.
+    #[test]
+    fn the_longest_labels_do_not_widen_the_panel() {
+        for width in [190.0f32, 260.0, 400.0] {
+            let got = panel_width_with(worst_case_config(), width);
+            assert!(
+                (got - width).abs() <= 1.0,
+                "asked for {width}, panel claimed {got}"
+            );
+        }
+    }
+
+    /// The *Recording* section starts collapsed, so the panel test above never
+    /// reaches it -- and its file row, a text field beside a browse button, is
+    /// where the width used to run away a few points every frame.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn the_recording_section_fits_the_panel_too() {
+        for cfg in [Config::default(), worst_case_config()] {
+            for width in [190.0f32, 260.0, 400.0] {
+                let got =
+                    section_width_at(cfg.clone(), width, |app, ui| app.recording_controls(ui));
+                assert!(
+                    (got - width).abs() <= 1.0,
+                    "asked for {width}, recording claimed {got}"
+                );
+            }
+        }
+    }
+
+    /// A zoom with no new sweep must still re-decimate the curves.
+    ///
+    /// Decimation is done against the visible range, so moving the view
+    /// invalidates the cached points exactly as new data does. Syncing only
+    /// when a sweep had arrived left the trace clipped to the previous window
+    /// until the next one landed -- a whole second at one sweep per second,
+    /// which reads as the plot flickering while you zoom.
+    ///
+    /// Driven through the real `App::update`, so it is the decision to sync
+    /// that is under test and not just the flag behind it.
+    #[test]
+    fn zooming_without_new_data_still_resyncs_the_curves() {
+        use eframe::App as _;
+
+        let ctx = egui::Context::default();
+        let mut app = SpectroScopeApp::build(&ctx, Config::default(), None);
+        let mut frame = eframe::Frame::_new_kittest();
+
+        let bins = 512usize;
+        let x: Vec<f64> = (0..bins).map(|i| 87.0e6 + i as f64 * 1.0e4).collect();
+        let y: Vec<f32> = (0..bins).map(|i| -90.0 + (i % 7) as f32).collect();
+        app.storage
+            .update(Frame {
+                timestamp: 1.0,
+                x: std::sync::Arc::new(x.clone()),
+                y,
+            })
+            .expect("the first sweep sets the bin count");
+
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1000.0, 700.0),
+            )),
+            ..Default::default()
+        };
+        let mut draw = |app: &mut SpectroScopeApp| {
+            let _ = ctx.run(input.clone(), |ctx| app.update(ctx, &mut frame));
+        };
+
+        for _ in 0..3 {
+            draw(&mut app);
+        }
+        let full = app.spectrum.main_span().expect("a curve was decimated");
+        assert!(full.1 - full.0 > 4.0e6, "{full:?} should span the sweep");
+
+        // Zoom to a fiftieth of the sweep, the way the waterfall does, and
+        // deliver no data at all afterwards.
+        app.spectrum.set_view_x(x[100], x[200]);
+        for _ in 0..2 {
+            draw(&mut app);
+        }
+
+        let zoomed = app.spectrum.main_span().expect("a curve was decimated");
+        assert!(
+            zoomed.0 >= x[99] && zoomed.1 <= x[201],
+            "{zoomed:?} should follow the zoom without waiting for a sweep, \
+             but it still spans {full:?}"
+        );
+    }
 
     #[test]
     fn sweep_time_needs_two_sweeps_to_mean_anything() {

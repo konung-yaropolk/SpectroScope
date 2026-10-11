@@ -863,7 +863,7 @@ mod web {
     }
 
     thread_local! {
-        static SOCKETS: RefCell<Vec<(u64, Live)>> = RefCell::new(Vec::new());
+        static SOCKETS: RefCell<Vec<(u64, Live)>> = const { RefCell::new(Vec::new()) };
     }
 
     fn take(id: u64) -> Option<Live> {

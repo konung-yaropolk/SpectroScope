@@ -56,23 +56,26 @@ impl LevelsPanel {
     ) -> LevelsOutcome {
         let mut outcome = LevelsOutcome::default();
 
+        let before = (levels.colormap, levels.reverse);
         ui.horizontal(|ui| {
             ui.label("Color map:");
-            let before = (levels.colormap, levels.reverse);
             egui::ComboBox::from_id_salt("levels.colormap")
                 .selected_text(levels.colormap_name())
-                .width(120.0)
+                .truncate()
+                .width(crate::ui::combo_width(ui, 140.0))
                 .show_ui(ui, |ui| {
                     for (i, name) in colormap::NAMES.iter().enumerate() {
                         ui.selectable_value(&mut levels.colormap, i, *name);
                     }
                 });
-            ui.checkbox(&mut levels.reverse, "Reverse")
-                .on_hover_text("Flip the colour map");
-            if (levels.colormap, levels.reverse) != before {
-                outcome.colormap_changed = true;
-            }
         });
+        // On its own line: beside the combo it made this the widest row in the
+        // panel, and the widest row is what the panel refuses to shrink below.
+        ui.checkbox(&mut levels.reverse, "Reverse")
+            .on_hover_text("Flip the colour map");
+        if (levels.colormap, levels.reverse) != before {
+            outcome.colormap_changed = true;
+        }
 
         ui.add_space(4.0);
         ui.checkbox(&mut levels.auto, "Auto levels")

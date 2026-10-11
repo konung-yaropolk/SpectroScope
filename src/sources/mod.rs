@@ -500,20 +500,22 @@ pub fn registry() -> &'static [&'static dyn SpectrumSource] {
     static REGISTRY: OnceLock<Vec<&'static dyn SpectrumSource>> = OnceLock::new();
 
     REGISTRY.get_or_init(|| {
-        let mut v: Vec<&'static dyn SpectrumSource> = Vec::new();
-
+        // These shell out to a local binary, which a browser has not got.
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            v.push(&soapy_power::SoapyPower);
-            v.push(&hackrf_sweep::HackrfSweep);
-            v.push(&rtl_power_fftw::RtlPowerFftw);
-            v.push(&rtl_power::RtlPower);
-            v.push(&rx_power::RxPower);
-        }
+        let native: &[&'static dyn SpectrumSource] = &[
+            &soapy_power::SoapyPower,
+            &hackrf_sweep::HackrfSweep,
+            &rtl_power_fftw::RtlPowerFftw,
+            &rtl_power::RtlPower,
+            &rx_power::RxPower,
+        ];
+        #[cfg(target_arch = "wasm32")]
+        let native: &[&'static dyn SpectrumSource] = &[];
 
-        v.push(&rtl_tcp::RtlTcp);
-        v.push(&demo::Demo);
-        v
+        // A socket and a function are all these two need, so every target
+        // gets them, and they come after the real hardware in the list.
+        let portable: [&'static dyn SpectrumSource; 2] = [&rtl_tcp::RtlTcp, &demo::Demo];
+        native.iter().copied().chain(portable).collect()
     })
 }
 

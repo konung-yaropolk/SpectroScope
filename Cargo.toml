@@ -169,6 +169,24 @@ opt-level = "s"
 panic = "abort"
 
 # ---------------------------------------------------------------------------
+# Web packaging (wasm-pack)
+# ---------------------------------------------------------------------------
+# wasm-pack ships wasm-opt 117, which refuses to even parse the bulk-memory
+# and sign-extension instructions rustc now emits unless each proposal is
+# named. Without these flags the release build dies on "error validating
+# input" and the only advice on offer is to turn the optimiser off.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = [
+    "-O",
+    "--enable-bulk-memory",
+    "--enable-sign-ext",
+    "--enable-mutable-globals",
+    "--enable-nontrapping-float-to-int",
+    "--enable-reference-types",
+    "--enable-multivalue",
+]
+
+# ---------------------------------------------------------------------------
 # Android packaging (cargo-apk)
 # ---------------------------------------------------------------------------
 [package.metadata.android]
