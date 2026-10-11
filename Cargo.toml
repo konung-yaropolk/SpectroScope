@@ -103,7 +103,7 @@ wgpu = { version = "25", default-features = false, features = [
 # and the paths it hands back are content:// URIs rather than anything
 # `File::create` would take. The two call sites return `None` there instead.
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
-rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+rfd = { version = "0.16", default-features = false, features = ["xdg-portal", "tokio"] }
 
 # Screen-reader support, everywhere it can be had. See the note on the main
 # eframe dependency for why Android is left out rather than this being a
