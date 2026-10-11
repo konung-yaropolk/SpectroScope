@@ -42,7 +42,7 @@ jobs:
     # served, so it is the last place to want a floating image.
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # rust-toolchain.toml pins the channel (1.96) and already lists
       # wasm32-unknown-unknown under `targets`, so rustup installs it here
