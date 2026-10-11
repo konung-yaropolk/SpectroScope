@@ -442,7 +442,7 @@ jobs:
       # is what guarantees the variable exists and names one the Android build
       # tools accept. 17 is the version the Android toolchain is built against.
       - name: Install JDK
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "17"
