@@ -59,6 +59,12 @@ fn main() {
             bin_hz: (x[x.len() - 1] - x[0]) / (x.len() - 1) as f64,
             sweep_s: arg(5, 0.01),
             newest_unix: spectroscope::util::now_unix(),
+            plan: spectroscope::bandplan::find(
+                &std::env::args()
+                    .nth(6)
+                    .unwrap_or_else(|| "general".to_owned()),
+            ),
+            annotate_tiff: std::env::args().nth(7).is_some(),
         },
         _ => image_export::Axes::default(),
     };

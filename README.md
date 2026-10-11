@@ -115,10 +115,18 @@ two deliberately different things:
   as an ImageJ LUT, along with the display window, so ImageJ opens it looking
   exactly like the screen while *Analyze → Measure* and every plugin still read
   dBm. Baking the colours in would quantise 32-bit data to 8 bits per channel
-  and make the file unmeasurable. It is also why the TIFF carries **no** drawn
-  ruler: painting labels into it would overwrite measurements with decoration.
-  Axis parameters — start frequency, bin width, sweep interval — ride along in
-  the ImageJ description instead.
+  and make the file unmeasurable. It is also why the TIFF carries no drawn
+  ruler by default: painting labels into it would overwrite measurements with
+  decoration. Axis parameters — start frequency, bin width, sweep interval —
+  ride along in the ImageJ description instead.
+
+  *Label the TIFF too* overrides that when you want one file that is both.
+  The ruler and band plan are then written as the display window’s own
+  extremes, so the stored LUT paints them at the two ends of the colour map
+  and the file is still nothing but sample values — but they do overwrite the
+  pixels they cover. The margins shift the data away from the image origin, so
+  `spectroscope.data_x0`, `data_y0`, `data_width` and `data_height` record
+  where it actually starts.
 
 Both are lossless, which matters when the image is evidence: JPEG ringing
 around a carrier is indistinguishable from a spur.

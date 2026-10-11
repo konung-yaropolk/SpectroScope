@@ -1,0 +1,656 @@
+//! Band plan for the United Kingdom.
+//!
+//! Transcribed from https://raw.githubusercontent.com/AlexandreRouma/SDRPlusPlus/master/root/res/bandplans/united-kingdom.json, fetched 2026-10-11.
+//! Two inverted bands caused by upstream digit-shift typos are repaired and some licence-exempt services are retyped; see the band comments.
+
+use super::{Band, BandKind, BandPlan};
+
+pub static PLAN: BandPlan = BandPlan {
+    id: "uk",
+    label: "United Kingdom",
+    source: "https://raw.githubusercontent.com/AlexandreRouma/SDRPlusPlus/master/root/res/bandplans/united-kingdom.json",
+    bands: &BANDS,
+};
+
+static BANDS: [Band; 104] = [
+    Band {
+        start_hz: 135_700.0,
+        stop_hz: 137_800.0,
+        name: "2200m Ham Band",
+        kind: BandKind::Amateur,
+    },
+    Band {
+        start_hz: 148_500.0,
+        stop_hz: 283_500.0,
+        name: "Long Wave",
+        kind: BandKind::Broadcast,
+    },
+    Band {
+        start_hz: 283_500.0,
+        stop_hz: 526_500.0,
+        name: "Air/Marine Nav Beacons",
+        kind: BandKind::Aviation,
+    },
+    Band {
+        start_hz: 526_500.0,
+        stop_hz: 1_606_500.0,
+        name: "Medium Wave (AM Broadcast)",
+        kind: BandKind::Broadcast,
+    },
+    Band {
+        start_hz: 1_810_000.0,
+        stop_hz: 2_000_000.0,
+        name: "160m Ham Band",
+        kind: BandKind::Amateur,
+    },
+    Band {
+        start_hz: 2_045_000.0,
+        stop_hz: 2_300_000.0,
+        name: "Maritime",
+        kind: BandKind::Marine,
+    },
+    Band {
+        start_hz: 2_300_000.0,
+        stop_hz: 2_495_000.0,
+        name: "120m Broadcast",
+        kind: BandKind::Broadcast,
+    },
+    Band {
+        start_hz: 2_500_000.0,
+        stop_hz: 2_850_000.0,
+        name: "Maritime",
+        kind: BandKind::Marine,
+    },
+    Band {
+        start_hz: 2_850_000.0,
+        stop_hz: 3_155_000.0,
+        name: "Aeronautical Mobile",
+        kind: BandKind::Aviation,
+    },
+    Band {
+        start_hz: 3_200_000.0,
+        stop_hz: 3_400_000.0,
+        name: "90m Broadcast",
+        kind: BandKind::Broadcast,
+    },
+    Band {
+        start_hz: 3_400_000.0,
+        stop_hz: 3_500_000.0,
+        name: "Aeronautical Mobile",
+        kind: BandKind::Aviation,
+    },
+    Band {
+        start_hz: 3_500_000.0,
+        stop_hz: 3_800_000.0,
+        name: "80m Ham Band",
+        kind: BandKind::Amateur,
+    },
+    Band {
+        start_hz: 3_900_000.0,
+        stop_hz: 4_000_000.0,
+        name: "75m Broadcast",
+        kind: BandKind::Broadcast,
+    },
+    Band {
+        start_hz: 4_063_000.0,
+        stop_hz: 4_438_000.0,
+        name: "Maritime",
+        kind: BandKind::Marine,
+    },
+    Band {
+        start_hz: 4_650_000.0,
+        stop_hz: 4_750_000.0,
+        name: "Aeronautical Mobile",
+        kind: BandKind::Aviation,
+    },
+    Band {
+        start_hz: 4_750_000.0,
+        stop_hz: 4_995_000.0,
+        name: "60m Broadcast",
+        kind: BandKind::Broadcast,
+    },
+    Band {
+        start_hz: 5_258_500.0,
+        stop_hz: 5_406_500.0,
+        name: "60m Ham Band",
+        kind: BandKind::Amateur,
+    },
+    Band {
+        start_hz: 5_450_000.0,
+        stop_hz: 5_730_000.0,
+        name: "Aeronautical Mobile",
+        kind: BandKind::Aviation,
+    },
+    Band {
+        start_hz: 5_900_000.0,
+        stop_hz: 6_200_000.0,
+        name: "49m Broadcast",
+        kind: BandKind::Broadcast,
+    },
+    Band {
+        start_hz: 6_200_000.0,
+        stop_hz: 6_525_000.0,
+        name: "Maritime",
+        kind: BandKind::Marine,
+    },
+    Band {
+        start_hz: 6_525_000.0,
+        stop_hz: 6_765_000.0,
+        name: "Aeronautical Mobile",
+        kind: BandKind::Aviation,
+    },
+    Band {
+        start_hz: 7_000_000.0,
+        stop_hz: 7_200_000.0,
+        name: "40m Ham Band",
+        kind: BandKind::Amateur,
+    },
+    Band {
+        start_hz: 7_200_000.0,
+        stop_hz: 7_450_000.0,
+        name: "41m Broadcast",
+        kind: BandKind::Broadcast,
+    },
+    Band {
+        start_hz: 8_195_000.0,
+        stop_hz: 8_815_000.0,
+        name: "Maritime",
+        kind: BandKind::Marine,
+    },
+    Band {
+        start_hz: 8_815_000.0,
+        stop_hz: 9_040_000.0,
+        name: "Aeronautical Mobile",
+        kind: BandKind::Aviation,
+    },
+    Band {
+        start_hz: 9_400_000.0,
+        stop_hz: 9_900_000.0,
+        name: "31m Broadcast",
+        kind: BandKind::Broadcast,
+    },
+    Band {
+        start_hz: 10_005_000.0,
+        stop_hz: 10_100_000.0,
+        name: "Aeronautical Mobile",
+        kind: BandKind::Aviation,
+    },
+    Band {
+        start_hz: 10_100_000.0,
+        stop_hz: 10_150_000.0,
+        name: "30m Ham Band",
+        kind: BandKind::Amateur,
+    },
+    Band {
+        start_hz: 11_175_000.0,
+        stop_hz: 11_400_000.0,
+        name: "Aeronautical Mobile",
+        kind: BandKind::Aviation,
+    },
+    Band {
+        start_hz: 11_600_000.0,
+        stop_hz: 12_230_000.0,
+        name: "25m Broadcast",
+        kind: BandKind::Broadcast,
+    },
+    Band {
+        start_hz: 12_230_000.0,
+        stop_hz: 13_200_000.0,
+        name: "Maritime",
+        kind: BandKind::Marine,
+    },
+    Band {
+        start_hz: 13_200_000.0,
+        stop_hz: 13_360_000.0,
+        name: "Aeronautical Mobile",
+        kind: BandKind::Aviation,
+    },
+    Band {
+        start_hz: 13_570_000.0,
+        stop_hz: 13_870_000.0,
+        name: "22m Broadcast",
+        kind: BandKind::Broadcast,
+    },
+    Band {
+        start_hz: 14_000_000.0,
+        stop_hz: 14_350_000.0,
+        name: "20m Ham Band",
+        kind: BandKind::Amateur,
+    },
+    Band {
+        start_hz: 15_010_000.0,
+        stop_hz: 15_100_000.0,
+        name: "Aeronautical Mobile",
+        kind: BandKind::Aviation,
+    },
+    Band {
+        start_hz: 15_100_000.0,
+        stop_hz: 15_800_000.0,
+        name: "19m Broadcast",
+        kind: BandKind::Broadcast,
+    },
+    Band {
+        start_hz: 16_360_000.0,
+        stop_hz: 17_410_000.0,
+        name: "Maritime",
+        kind: BandKind::Marine,
+    },
+    Band {
+        start_hz: 17_480_000.0,
+        stop_hz: 17_900_000.0,
+        name: "16m Broadcast",
+        kind: BandKind::Broadcast,
+    },
+    Band {
+        start_hz: 17_900_000.0,
+        stop_hz: 18_030_000.0,
+        name: "Aeronautical Mobile",
+        kind: BandKind::Aviation,
+    },
+    Band {
+        start_hz: 18_068_000.0,
+        stop_hz: 18_168_000.0,
+        name: "17m Ham Band",
+        kind: BandKind::Amateur,
+    },
+    Band {
+        start_hz: 18_780_000.0,
+        stop_hz: 18_900_000.0,
+        name: "Maritime - ship tx",
+        kind: BandKind::Marine,
+    },
+    Band {
+        start_hz: 18_900_000.0,
+        stop_hz: 19_020_000.0,
+        name: "15m Broadcast",
+        kind: BandKind::Broadcast,
+    },
+    Band {
+        start_hz: 19_680_000.0,
+        stop_hz: 19_990_000.0,
+        name: "Maritime - coast tx",
+        kind: BandKind::Marine,
+    },
+    Band {
+        start_hz: 21_000_000.0,
+        stop_hz: 21_450_000.0,
+        name: "15m Ham Band",
+        kind: BandKind::Amateur,
+    },
+    Band {
+        start_hz: 21_450_000.0,
+        stop_hz: 21_850_000.0,
+        name: "13m Broadcast",
+        kind: BandKind::Broadcast,
+    },
+    Band {
+        start_hz: 21_870_000.0,
+        stop_hz: 22_000_000.0,
+        name: "Aeronautical Mobile",
+        kind: BandKind::Aviation,
+    },
+    Band {
+        start_hz: 23_200_000.0,
+        stop_hz: 23_350_000.0,
+        name: "Aeronautical Mobile",
+        kind: BandKind::Aviation,
+    },
+    Band {
+        start_hz: 24_890_000.0,
+        stop_hz: 24_990_000.0,
+        name: "12m Ham Band",
+        kind: BandKind::Amateur,
+    },
+    // upstream start 256_700_000 is a digit-shift typo that inverts the band; the 11m broadcast
+    // band is 25.67-26.1 MHz (thargas International BandPlan.xml "Shortwave (11m) Broadcast",
+    // and SDR++ general/usa/canada.json)
+    Band {
+        start_hz: 25_670_000.0,
+        stop_hz: 26_100_000.0,
+        name: "11m Broadcast",
+        kind: BandKind::Broadcast,
+    },
+    // upstream type is "amateur"; this is a licence-exempt service, not an amateur allocation
+    Band {
+        start_hz: 26_960_000.0,
+        stop_hz: 27_410_000.0,
+        name: "CB - CEPT",
+        kind: BandKind::Unlicensed,
+    },
+    // upstream type is "amateur"; this is a licence-exempt service, not an amateur allocation
+    Band {
+        start_hz: 27_600_000.0,
+        stop_hz: 28_000_000.0,
+        name: "CB",
+        kind: BandKind::Unlicensed,
+    },
+    Band {
+        start_hz: 28_000_000.0,
+        stop_hz: 29_700_000.0,
+        name: "10m Ham Band",
+        kind: BandKind::Amateur,
+    },
+    // upstream type is "amateur"; this is a licence-exempt service, not an amateur allocation;
+    // the span also merges the old CT0/CT1 sub-bands, left as upstream
+    Band {
+        start_hz: 31_037_500.0,
+        stop_hz: 40_112_500.0,
+        name: "Analogue Cordless Phones",
+        kind: BandKind::Unlicensed,
+    },
+    // upstream type is "amateur"; this is a licence-exempt service, not an amateur allocation
+    Band {
+        start_hz: 49_820_000.0,
+        stop_hz: 49_987_500.0,
+        name: "Low Power Devices",
+        kind: BandKind::Unlicensed,
+    },
+    Band {
+        start_hz: 50_000_000.0,
+        stop_hz: 52_000_000.0,
+        name: "6m Ham Band",
+        kind: BandKind::Amateur,
+    },
+    Band {
+        start_hz: 70_000_000.0,
+        stop_hz: 70_500_000.0,
+        name: "4m Ham Band",
+        kind: BandKind::Amateur,
+    },
+    Band {
+        start_hz: 87_500_000.0,
+        stop_hz: 108_000_000.0,
+        name: "FM Broadcast",
+        kind: BandKind::Broadcast,
+    },
+    Band {
+        start_hz: 108_000_000.0,
+        stop_hz: 117_975_000.0,
+        name: "Air Band TACAN/ILS",
+        kind: BandKind::Aviation,
+    },
+    Band {
+        start_hz: 117_975_000.0,
+        stop_hz: 137_000_000.0,
+        name: "Air Band Voice",
+        kind: BandKind::Aviation,
+    },
+    Band {
+        start_hz: 137_000_000.0,
+        stop_hz: 138_000_000.0,
+        name: "Satellites",
+        kind: BandKind::Satellite,
+    },
+    Band {
+        start_hz: 144_000_000.0,
+        stop_hz: 146_000_000.0,
+        name: "2m Ham Band",
+        kind: BandKind::Amateur,
+    },
+    Band {
+        start_hz: 147_343_750.0,
+        stop_hz: 147_500_000.0,
+        name: "Land/Mountain Rescue",
+        kind: BandKind::Unlicensed,
+    },
+    Band {
+        start_hz: 148_000_000.0,
+        stop_hz: 150_050_000.0,
+        name: "Satellites",
+        kind: BandKind::Satellite,
+    },
+    Band {
+        start_hz: 153_025_000.0,
+        stop_hz: 153_500_000.0,
+        name: "Pagers - Flex/POCSAG",
+        kind: BandKind::Unlicensed,
+    },
+    Band {
+        start_hz: 155_000_000.0,
+        stop_hz: 156_000_000.0,
+        name: "Land/Mountain Rescue DMR",
+        kind: BandKind::Unlicensed,
+    },
+    Band {
+        start_hz: 156_000_000.0,
+        stop_hz: 157_850_000.0,
+        name: "Marine - ship tx",
+        kind: BandKind::Marine,
+    },
+    Band {
+        start_hz: 158_787_500.0,
+        stop_hz: 159_687_500.0,
+        name: "Short Term Hire",
+        kind: BandKind::Unlicensed,
+    },
+    Band {
+        start_hz: 160_650_000.0,
+        stop_hz: 162_025_000.0,
+        name: "Marine - coast tx",
+        kind: BandKind::Marine,
+    },
+    Band {
+        start_hz: 163_287_500.0,
+        stop_hz: 164_200_000.0,
+        name: "Short Term Hire",
+        kind: BandKind::Unlicensed,
+    },
+    Band {
+        start_hz: 165_000_000.0,
+        stop_hz: 174_000_000.0,
+        name: "Business Radio",
+        kind: BandKind::Unlicensed,
+    },
+    Band {
+        start_hz: 174_000_000.0,
+        stop_hz: 230_000_000.0,
+        name: "DAB Radio",
+        kind: BandKind::Broadcast,
+    },
+    Band {
+        start_hz: 230_000_000.0,
+        stop_hz: 400_000_000.0,
+        name: "Military Air",
+        kind: BandKind::Military,
+    },
+    Band {
+        start_hz: 399_900_000.0,
+        stop_hz: 401_000_000.0,
+        name: "Satellites",
+        kind: BandKind::Satellite,
+    },
+    Band {
+        start_hz: 401_000_000.0,
+        stop_hz: 406_000_000.0,
+        name: "Weather Balloons",
+        kind: BandKind::Aviation,
+    },
+    Band {
+        start_hz: 422_000_000.0,
+        stop_hz: 424_000_000.0,
+        name: "Private Mobile Radio inc trams",
+        kind: BandKind::Unlicensed,
+    },
+    Band {
+        start_hz: 430_000_000.0,
+        stop_hz: 440_000_000.0,
+        name: "70cm Ham Band",
+        kind: BandKind::Amateur,
+    },
+    Band {
+        start_hz: 446_000_000.0,
+        stop_hz: 446_200_000.0,
+        name: "PMR446",
+        kind: BandKind::Unlicensed,
+    },
+    Band {
+        start_hz: 446_200_000.0,
+        stop_hz: 447_512_500.0,
+        name: "Outside Broadcast Talkback",
+        kind: BandKind::Unlicensed,
+    },
+    Band {
+        start_hz: 447_600_000.0,
+        stop_hz: 454_000_000.0,
+        name: "Private Mobile Radio",
+        kind: BandKind::Unlicensed,
+    },
+    // upstream type is "amateur", but UK 70cm amateur is 430-440 MHz only (Ofcom licence
+    // schedule), so this cannot be an amateur allocation
+    Band {
+        start_hz: 454_000_000.0,
+        stop_hz: 455_000_000.0,
+        name: "Mosques",
+        kind: BandKind::Other,
+    },
+    Band {
+        start_hz: 455_000_000.0,
+        stop_hz: 470_000_000.0,
+        name: "Private Mobile Radio inc OB",
+        kind: BandKind::Unlicensed,
+    },
+    Band {
+        start_hz: 470_000_000.0,
+        stop_hz: 700_000_000.0,
+        name: "Digital TV Broadcast",
+        kind: BandKind::Broadcast,
+    },
+    Band {
+        start_hz: 703_000_000.0,
+        stop_hz: 788_000_000.0,
+        name: "Cell phones",
+        kind: BandKind::Mobile,
+    },
+    Band {
+        start_hz: 791_000_000.0,
+        stop_hz: 821_000_000.0,
+        name: "Band 20 Cell phone downlink",
+        kind: BandKind::Mobile,
+    },
+    Band {
+        start_hz: 832_000_000.0,
+        stop_hz: 862_000_000.0,
+        name: "Band 20 Cell phone uplink",
+        kind: BandKind::Mobile,
+    },
+    // upstream type is "amateur"; this is a licence-exempt service, not an amateur allocation
+    Band {
+        start_hz: 862_000_000.0,
+        stop_hz: 875_800_000.0,
+        name: "Licence Exempt Short Range",
+        kind: BandKind::Unlicensed,
+    },
+    Band {
+        start_hz: 880_100_000.0,
+        stop_hz: 914_900_000.0,
+        name: "Band 8 Cell phone uplink",
+        kind: BandKind::Mobile,
+    },
+    // suspect, left as upstream: 3GPP band 8 downlink runs to 960 MHz, so this looks truncated,
+    // but no fetched source gives the exact UK upper edge
+    Band {
+        start_hz: 925_100_000.0,
+        stop_hz: 929_500_000.0,
+        name: "Band 8 Cell phone downlink",
+        kind: BandKind::Mobile,
+    },
+    Band {
+        start_hz: 1_240_000_000.0,
+        stop_hz: 1_325_000_000.0,
+        name: "23cm Ham Band",
+        kind: BandKind::Amateur,
+    },
+    Band {
+        start_hz: 1_452_000_000.0,
+        stop_hz: 1_492_000_000.0,
+        name: "Band 32 Cell phone",
+        kind: BandKind::Mobile,
+    },
+    Band {
+        start_hz: 1_518_000_000.0,
+        stop_hz: 1_559_000_000.0,
+        name: "Satellite L-band",
+        kind: BandKind::Satellite,
+    },
+    Band {
+        start_hz: 1_626_500_000.0,
+        stop_hz: 1_660_500_000.0,
+        name: "Satellite L-band",
+        kind: BandKind::Satellite,
+    },
+    Band {
+        start_hz: 1_668_000_000.0,
+        stop_hz: 1_675_000_000.0,
+        name: "Satellite L-band",
+        kind: BandKind::Satellite,
+    },
+    Band {
+        start_hz: 1_710_000_000.0,
+        stop_hz: 1_785_000_000.0,
+        name: "Band 3 Cell phone uplink",
+        kind: BandKind::Mobile,
+    },
+    Band {
+        start_hz: 1_805_100_000.0,
+        stop_hz: 1_880_000_000.0,
+        name: "Band 3 Cell phone downlink",
+        kind: BandKind::Mobile,
+    },
+    // upstream type is "cellular"; DECT at 1880-1900 MHz is licence-exempt in the UK
+    Band {
+        start_hz: 1_880_000_000.0,
+        stop_hz: 1_900_000_000.0,
+        name: "DECT cordless phones",
+        kind: BandKind::Unlicensed,
+    },
+    Band {
+        start_hz: 1_900_000_000.0,
+        stop_hz: 1_920_000_000.0,
+        name: "Band 3 Cell phones",
+        kind: BandKind::Mobile,
+    },
+    Band {
+        start_hz: 1_920_000_000.0,
+        stop_hz: 1_979_700_000.0,
+        name: "Band 1 Cell phone uplink",
+        kind: BandKind::Mobile,
+    },
+    Band {
+        start_hz: 2_110_300_000.0,
+        stop_hz: 2_169_700_000.0,
+        name: "Band 1 Cell phone downlink",
+        kind: BandKind::Mobile,
+    },
+    Band {
+        start_hz: 2_300_000_000.0,
+        stop_hz: 2_302_000_000.0,
+        name: "13cm Ham Band",
+        kind: BandKind::Amateur,
+    },
+    Band {
+        start_hz: 2_400_000_000.0,
+        stop_hz: 2_483_000_000.0,
+        name: "ISM - wifi and bluettoth",
+        kind: BandKind::Unlicensed,
+    },
+    // upstream end 269_000_000 is a digit-shift typo that inverts the band; the 2.6 GHz band
+    // runs 2500-2690 MHz (Wikipedia LTE frequency bands, LTE bands 7/38)
+    Band {
+        start_hz: 2_500_000_000.0,
+        stop_hz: 2_690_000_000.0,
+        name: "Band 38 Cell phones",
+        kind: BandKind::Mobile,
+    },
+    Band {
+        start_hz: 3_410_000_000.0,
+        stop_hz: 3_720_000_000.0,
+        name: "Band 42 5G Cell phones",
+        kind: BandKind::Mobile,
+    },
+    Band {
+        start_hz: 5_150_000_000.0,
+        stop_hz: 5_850_000_000.0,
+        name: "ISM - wifi",
+        kind: BandKind::Unlicensed,
+    },
+];

@@ -20,6 +20,7 @@
 #![allow(clippy::field_reassign_with_default)]
 
 pub mod app;
+pub mod bandplan;
 pub mod colormap;
 pub mod config;
 pub mod data;

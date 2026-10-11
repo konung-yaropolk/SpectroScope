@@ -245,6 +245,12 @@ pub struct Config {
     pub show_waterfall: bool,
     /// Frequency ruler above the waterfall.
     pub show_waterfall_ruler: bool,
+    /// Band plan strip above the ruler.
+    pub show_band_plan: bool,
+    /// [`crate::bandplan::BandPlan::id`] of the region to show.
+    pub band_plan: String,
+    /// Draw the ruler and band strip into a saved TIFF as well as a PNG.
+    pub annotate_tiff: bool,
     pub show_levels_panel: bool,
     pub show_controls_panel: bool,
     pub dark_mode: bool,
@@ -296,6 +302,9 @@ impl Default for Config {
             plot_split: 0.5,
             show_waterfall: true,
             show_waterfall_ruler: true,
+            show_band_plan: false,
+            band_plan: "general".to_owned(),
+            annotate_tiff: false,
             show_levels_panel: true,
             show_controls_panel: true,
             dark_mode: true,
@@ -317,6 +326,15 @@ impl Config {
             self.waterfall_history_size = self.waterfall_history_size.max(full);
         }
         self.config_version = CONFIG_VERSION;
+    }
+
+    /// The band plan to print, or [`crate::bandplan::NONE`] when switched off.
+    pub fn active_band_plan(&self) -> &'static crate::bandplan::BandPlan {
+        if self.show_band_plan {
+            crate::bandplan::find(&self.band_plan)
+        } else {
+            &crate::bandplan::NONE
+        }
     }
 
     /// The selected backend, falling back to the default if the stored id is

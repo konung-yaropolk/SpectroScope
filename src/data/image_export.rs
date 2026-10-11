@@ -66,7 +66,7 @@ impl std::error::Error for ExportError {}
 ///
 /// Without this a raw TIFF is a grid of numbers with no idea which bin or which
 /// sweep any of them came from.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct Axes {
     /// Centre frequency of the first bin, Hz.
     pub start_hz: f64,
@@ -76,6 +76,27 @@ pub struct Axes {
     pub sweep_s: f64,
     /// Unix time of the newest sweep, which is image row 0.
     pub newest_unix: f64,
+    /// Band plan to print above the ruler.
+    pub plan: &'static crate::bandplan::BandPlan,
+    /// Draw the ruler and band strip into the TIFF as well as the PNG.
+    ///
+    /// Off by default: the TIFF is measurement data, and labels painted into
+    /// it overwrite real readings. On, they are written as the display
+    /// window's own extremes so the colour map renders them.
+    pub annotate_tiff: bool,
+}
+
+impl Default for Axes {
+    fn default() -> Self {
+        Self {
+            start_hz: 0.0,
+            bin_hz: 0.0,
+            sweep_s: 0.0,
+            newest_unix: 0.0,
+            plan: &crate::bandplan::NONE,
+            annotate_tiff: false,
+        }
+    }
 }
 
 impl Axes {
@@ -87,6 +108,7 @@ impl Axes {
             bin_hz: self.bin_hz,
             newest_unix: self.newest_unix,
             sweep_s: self.sweep_s,
+            plan: self.plan,
         }
     }
 }
@@ -210,7 +232,25 @@ fn save_tiff(
         WriterOptions,
     };
 
-    let (width, height, raw) = raw_rows(history).ok_or(ExportError::Empty)?;
+    let (data_w, data_h, data) = raw_rows(history).ok_or(ExportError::Empty)?;
+
+    // Optional, because labels painted into the pixels overwrite real
+    // readings. When asked for, they are written as the display window's own
+    // extremes, so the stored LUT renders them and the file stays nothing but
+    // sample values.
+    let annotation = axes.annotation();
+    let (width, height, raw, margins) = if axes.annotate_tiff {
+        let (w, h, px) =
+            super::annotate::with_axes_raw(data_w, data_h, &data, &annotation, low, high);
+        (
+            w,
+            h,
+            px,
+            Some(super::annotate::Margins::for_annotation(&annotation)),
+        )
+    } else {
+        (data_w, data_h, data, None)
+    };
 
     // `Color` is the mode that tells ImageJ to run the single channel through
     // the LUT below instead of showing it grey.
@@ -225,6 +265,17 @@ fn save_tiff(
         .extra("spectroscope.x", "frequency")
         .extra("spectroscope.y", "time, newest first")
         .extra("spectroscope.values", "dBm");
+
+    // Margins shift the data away from the image origin, so a reader needs to
+    // know where it actually starts before pixel coordinates mean anything.
+    if let Some(m) = margins {
+        meta = meta
+            .extra("spectroscope.data_x0", m.left.to_string())
+            .extra("spectroscope.data_y0", m.top.to_string())
+            .extra("spectroscope.data_width", data_w.to_string())
+            .extra("spectroscope.data_height", data_h.to_string())
+            .extra("spectroscope.annotated", "1");
+    }
 
     if axes.bin_hz.is_finite() && axes.bin_hz > 0.0 {
         meta = meta
@@ -368,7 +419,10 @@ mod tests {
         let path = temp("pic.png");
         // A PNG is a picture, so it comes out inside its labelled margins.
         let (w, ht) = save(&path, &h, &GREY, -100.0, 0.0, Axes::default()).expect("save");
-        assert_eq!((w, ht), super::super::annotate::outer_size(2, 2));
+        assert_eq!(
+            (w, ht),
+            super::super::annotate::outer_size(2, 2, &Axes::default().annotation())
+        );
 
         let decoded = image::ImageReader::open(&path)
             .expect("open")
@@ -394,6 +448,7 @@ mod tests {
             bin_hz: 10e3,
             sweep_s: 1.5,
             newest_unix: 1e9,
+            ..Axes::default()
         };
         let (w, ht) = save(&path, &h, &GREY, -100.0, 0.0, axes).expect("save");
         assert_eq!((w, ht), (2, 2));
@@ -460,6 +515,7 @@ mod tests {
             bin_hz: 10e3,
             sweep_s: 2.0,
             newest_unix: 1e9,
+            ..Axes::default()
         };
         save(&path, &h, &GREY, -100.0, 0.0, axes).expect("save");
 

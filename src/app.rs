@@ -218,6 +218,8 @@ impl SpectroScopeApp {
                     bin_hz: (x[x.len() - 1] - x[0]) / (x.len() - 1) as f64,
                     sweep_s: self.sweep_time,
                     newest_unix: self.storage.timestamp(),
+                    plan: self.cfg.active_band_plan(),
+                    annotate_tiff: self.cfg.annotate_tiff,
                 },
                 _ => crate::data::image_export::Axes::default(),
             };
@@ -816,6 +818,28 @@ impl SpectroScopeApp {
                 {
                     baseline_dirty = true;
                 }
+
+                ui.separator();
+                ui.checkbox(&mut self.cfg.show_band_plan, "Band plan")
+                    .on_hover_text("Print allocations above the waterfall ruler");
+                ui.add_enabled_ui(self.cfg.show_band_plan, |ui| {
+                    let current = crate::bandplan::find(&self.cfg.band_plan);
+                    egui::ComboBox::from_id_salt("bandplan.region")
+                        .selected_text(current.label)
+                        .width(ui.available_width())
+                        .show_ui(ui, |ui| {
+                            for plan in crate::bandplan::plans() {
+                                // "None" is what the checkbox above is for.
+                                if plan.bands.is_empty() {
+                                    continue;
+                                }
+                                let selected = plan.id == self.cfg.band_plan;
+                                if ui.selectable_label(selected, plan.label).clicked() {
+                                    self.cfg.band_plan = plan.id.to_owned();
+                                }
+                            }
+                        });
+                });
             });
 
         if smoothing_dirty {
@@ -963,6 +987,11 @@ impl SpectroScopeApp {
                 self.save_waterfall(std::path::PathBuf::from(p));
             }
         }
+        ui.checkbox(&mut self.cfg.annotate_tiff, "Label the TIFF too")
+            .on_hover_text(
+                "Draw the ruler and band plan into a saved TIFF as well. They go in at                  the display window's own extremes so the colour map paints them -- but                  they do overwrite those pixels, which the PNG does not.",
+            );
+
         if have_history {
             let h = self.storage.history();
             ui.label(
@@ -1058,6 +1087,7 @@ impl SpectroScopeApp {
                 gutter_left,
                 gutter_right,
                 show_ruler: self.cfg.show_waterfall_ruler,
+                plan: self.cfg.active_band_plan(),
             };
             let (head, rows) = (history.head(), history.len());
             let wf = self.waterfall.ui(ui, head, rows, &view);

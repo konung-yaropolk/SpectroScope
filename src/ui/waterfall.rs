@@ -29,6 +29,8 @@ const TICK_LEN: f32 = 5.0;
 
 /// Height of the frequency ruler above the image, in points.
 const RULER_H: f32 = 17.0;
+/// Height of the band plan strip above the ruler, in points.
+const PLAN_H: f32 = 14.0;
 /// Shortest gap between ruler labels, so they cannot run together.
 const RULER_LABEL_GAP: f64 = 64.0;
 /// Ruler colours, matching the exported picture so the two cannot drift.
@@ -90,6 +92,8 @@ pub struct WaterfallView {
     pub gutter_right: f32,
     /// Draw the frequency ruler above the image.
     pub show_ruler: bool,
+    /// Band plan printed above the ruler; empty for none.
+    pub plan: &'static crate::bandplan::BandPlan,
 }
 
 /// What the user did to the waterfall this frame.
@@ -210,7 +214,6 @@ fn draw_frequency_ruler(
     use crate::data::annotate::{format_tick, nice_step};
 
     let painter = ui.painter_at(band);
-    painter.rect_filled(band, 0.0, RULER_BG);
 
     let span = view_x.1 - view_x.0;
     let width = image_rect.width() as f64;
@@ -256,6 +259,70 @@ fn draw_frequency_ruler(
                 egui::Align2::CENTER_TOP,
                 format_tick(hz, step, view_x.1),
                 font.clone(),
+                RULER_FG,
+            );
+        }
+    }
+}
+
+/// The band plan strip: each allocation boxed and named, clipped to the view.
+///
+/// Drawn in the ruler's own yellow and black so the header reads as one unit.
+/// A band too narrow for its name keeps its edges, because knowing where an
+/// allocation starts is more use than knowing what it is called.
+fn draw_band_plan(
+    ui: &egui::Ui,
+    strip: egui::Rect,
+    image_rect: egui::Rect,
+    view_x: (f64, f64),
+    plan: &crate::bandplan::BandPlan,
+) {
+    let span = view_x.1 - view_x.0;
+    let width = image_rect.width() as f64;
+    if !(span > 0.0) || !span.is_finite() || width <= 0.0 {
+        return;
+    }
+
+    let painter = ui.painter_at(strip);
+    let font = egui::FontId::proportional(10.0);
+    let stroke = egui::Stroke::new(1.0, RULER_FG);
+    let to_x = |hz: f64| image_rect.left() + ((hz - view_x.0) / span * width) as f32;
+
+    for band in plan.overlapping(view_x.0, view_x.1) {
+        let x0 = to_x(band.start_hz).max(image_rect.left());
+        let x1 = to_x(band.stop_hz).min(image_rect.right());
+        if x1 <= x0 {
+            continue;
+        }
+
+        painter.line_segment(
+            [
+                egui::pos2(x0, strip.top() + 1.0),
+                egui::pos2(x0, strip.bottom() - 1.0),
+            ],
+            stroke,
+        );
+        painter.line_segment(
+            [
+                egui::pos2(x1, strip.top() + 1.0),
+                egui::pos2(x1, strip.bottom() - 1.0),
+            ],
+            stroke,
+        );
+
+        // A rough width test first: laying out every name in a 7000-band plan
+        // just to discover it does not fit would cost more than the strip.
+        if (x1 - x0) < 24.0 {
+            continue;
+        }
+        let galley = painter.layout_no_wrap(band.name.to_owned(), font.clone(), RULER_FG);
+        if galley.size().x + 4.0 <= x1 - x0 {
+            painter.galley(
+                egui::pos2(
+                    (x0 + x1) * 0.5 - galley.size().x * 0.5,
+                    strip.center().y - galley.size().y * 0.5,
+                ),
+                galley,
                 RULER_FG,
             );
         }
@@ -1127,10 +1194,17 @@ impl Waterfall {
         // does, so the two are registered to the pixel; the left gutter carries
         // the time axis, mirroring the plot y-axis labels above.
         let ruler_h = if view.show_ruler { RULER_H } else { 0.0 };
+        // The plan rides on the ruler, so it is only drawn with it.
+        let plan_h = if view.show_ruler && !view.plan.bands.is_empty() {
+            PLAN_H
+        } else {
+            0.0
+        };
+        let header_h = ruler_h + plan_h;
         let image_rect = egui::Rect::from_min_max(
             egui::pos2(
                 rect.left() + view.gutter_left.max(0.0),
-                rect.top() + ruler_h,
+                rect.top() + header_h,
             ),
             egui::pos2(rect.right() - view.gutter_right.max(0.0), rect.bottom()),
         );
@@ -1179,9 +1253,24 @@ impl Waterfall {
         }
 
         if view.show_ruler {
-            let band = egui::Rect::from_min_max(
+            // One continuous yellow header: plan on top, ruler below it.
+            let header = egui::Rect::from_min_max(
                 egui::pos2(rect.left(), rect.top()),
-                egui::pos2(rect.right(), rect.top() + ruler_h),
+                egui::pos2(rect.right(), rect.top() + header_h),
+            );
+            ui.painter_at(header).rect_filled(header, 0.0, RULER_BG);
+
+            if plan_h > 0.0 {
+                let strip = egui::Rect::from_min_max(
+                    header.min,
+                    egui::pos2(header.right(), header.top() + plan_h),
+                );
+                draw_band_plan(ui, strip, image_rect, view.view_x, view.plan);
+            }
+
+            let band = egui::Rect::from_min_max(
+                egui::pos2(header.left(), header.top() + plan_h),
+                header.max,
             );
             draw_frequency_ruler(ui, band, image_rect, view.view_x);
         }
@@ -1811,6 +1900,7 @@ mod tests {
             gutter_left: 0.0,
             gutter_right: 0.0,
             show_ruler: false,
+            plan: &crate::bandplan::NONE,
         }
     }
 
