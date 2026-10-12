@@ -45,7 +45,7 @@ eframe = { version = "0.32", default-features = false, features = [
     "wgpu",
     "x11",
 ] }
-egui = "0.32"
+egui = "0.36"
 egui_plot = "0.33"
 
 # --- data / infra ------------------------------------------------------------
