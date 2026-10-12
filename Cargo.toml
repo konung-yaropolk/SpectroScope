@@ -46,7 +46,7 @@ eframe = { version = "0.32", default-features = false, features = [
     "x11",
 ] }
 egui = "0.32"
-egui_plot = "0.33"
+egui_plot = "0.37"
 
 # --- data / infra ------------------------------------------------------------
 bytemuck = { version = "1", features = ["derive"] }
