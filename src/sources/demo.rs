@@ -33,6 +33,10 @@ static INFO: SourceInfo = SourceInfo {
         interval: Limit::new(0.0, 3600.0, 0.1),
         ppm: Limit::new(-999, 999, 0),
         crop: Limit::new(0, 49, 0),
+        // Synthetic: it is not pretending to be any particular radio, so both
+        // controls stay free numeric entries.
+        sample_rate_choices: super::CONTINUOUS,
+        gain_choices: super::CONTINUOUS,
     },
 };
 

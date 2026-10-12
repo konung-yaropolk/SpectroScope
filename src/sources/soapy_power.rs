@@ -33,6 +33,10 @@ static INFO: SourceInfo = SourceInfo {
         interval: Limits::DEFAULT.interval,
         ppm: Limits::DEFAULT.ppm,
         crop: Limits::DEFAULT.crop,
+        // SoapySDR reaches every radio there is, from an RTL dongle to a USRP;
+        // there is no one list of rates or gains to offer.
+        sample_rate_choices: super::CONTINUOUS,
+        gain_choices: super::CONTINUOUS,
     },
 };
 

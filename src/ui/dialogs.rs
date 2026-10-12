@@ -244,19 +244,39 @@ impl Dialogs {
 
                 if !limits.sample_rate.is_fixed() {
                     ui.label("Sample rate:");
-                    let mut mhz = self.draft.sample_rate / 1e6;
-                    if ui
-                        .add(
-                            egui::DragValue::new(&mut mhz)
-                                .suffix(" MHz")
-                                .speed(0.01)
-                                .range(
-                                    (limits.sample_rate.min / 1e6)..=(limits.sample_rate.max / 1e6),
-                                ),
-                        )
-                        .changed()
-                    {
-                        self.draft.sample_rate = mhz * 1e6;
+                    if limits.sample_rate_choices.is_empty() {
+                        let mut mhz = self.draft.sample_rate / 1e6;
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut mhz)
+                                    .suffix(" MHz")
+                                    .speed(0.01)
+                                    .range(
+                                        (limits.sample_rate.min / 1e6)
+                                            ..=(limits.sample_rate.max / 1e6),
+                                    ),
+                            )
+                            .changed()
+                        {
+                            self.draft.sample_rate = mhz * 1e6;
+                        }
+                    } else {
+                        // A rate the radio does not divide to exactly is not a
+                        // rate, so the device's own list is all there is to
+                        // pick from. A value from an older config that is not
+                        // on the list still shows as itself rather than being
+                        // silently rounded to a neighbour.
+                        egui::ComboBox::from_id_salt("spectroscope.sample_rate")
+                            .selected_text(rate_label(self.draft.sample_rate))
+                            .show_ui(ui, |ui| {
+                                for rate in limits.sample_rate_choices {
+                                    ui.selectable_value(
+                                        &mut self.draft.sample_rate,
+                                        *rate,
+                                        rate_label(*rate),
+                                    );
+                                }
+                            });
                     }
                     ui.label("");
                     ui.end_row();
@@ -516,6 +536,18 @@ impl Dialogs {
     }
 }
 
+/// A sample rate as the drop-down shows it: MS/s, trailing zeros trimmed.
+///
+/// The radio's rates are exact figures like 1.024 and 2.048 MS/s, so they are
+/// written out in full rather than rounded to a tidy 1.0 or 2.0 that would make
+/// two neighbouring entries look identical.
+fn rate_label(hz: f64) -> String {
+    let ms = hz / 1e6;
+    let text = format!("{ms:.3}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    format!("{text} MS/s")
+}
+
 fn about_body(ui: &mut egui::Ui) {
     ui.heading(format!("{APP_NAME} {VERSION}"));
     ui.add_space(4.0);
@@ -597,6 +629,26 @@ fn pick_file(title: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The radio's rates differ in the third decimal, so rounding them for
+    /// tidiness would put two indistinguishable entries on the menu.
+    #[test]
+    fn rate_labels_keep_the_digits_that_tell_rates_apart() {
+        assert_eq!(rate_label(2_048_000.0), "2.048 MS/s");
+        assert_eq!(rate_label(1_024_000.0), "1.024 MS/s");
+        assert_eq!(rate_label(250_000.0), "0.25 MS/s");
+        assert_eq!(rate_label(1_400_000.0), "1.4 MS/s");
+        assert_eq!(rate_label(3_200_000.0), "3.2 MS/s");
+
+        let labels: Vec<String> = sources::RTL_SAMPLE_RATES
+            .iter()
+            .map(|r| rate_label(*r))
+            .collect();
+        let mut unique = labels.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), labels.len(), "two rates share a label");
+    }
 
     #[test]
     fn cancel_discards_edits() {

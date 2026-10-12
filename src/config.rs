@@ -281,7 +281,10 @@ impl Default for Config {
             interval: 1.0,
             gain: -1.0,
             ppm: 0,
-            crop: 0,
+            // Matches `Limits::DEFAULT`: hop edges are where the tuner's own
+            // filter rolls off, so a fifth comes off each one unless the user
+            // says otherwise.
+            crop: 20,
 
             traces: Traces::default(),
             colors: Colors::default(),

@@ -24,7 +24,10 @@ static INFO: SourceInfo = SourceInfo {
         // rx_power derives the sample rate from the bin size itself, so the GUI
         // must offer nothing to set: a fixed limit hides the control.
         sample_rate: Limit::new(0.0, 0.0, 0.0),
-        gain: Limit::new(-1.0, 999.0, 37.0),
+        // Nothing to choose from either, for the same reason the limit is
+        // fixed: the rate is not the user's to set here.
+        sample_rate_choices: super::CONTINUOUS,
+        gain: Limit::new(-1.0, 999.0, 37.2),
         start_freq: Limit::new(0.0, 7250.0, 87.0),
         stop_freq: Limit::new(0.0, 7250.0, 108.0),
         bin_size: Limit::new(0.0, 2800.0, 10.0),

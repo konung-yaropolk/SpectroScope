@@ -130,6 +130,43 @@ impl Limit<i32> {
     }
 }
 
+/// Sample rates an RTL-SDR is actually used at, Hz.
+///
+/// librtlsdr accepts anything in 225001-300000 or 900001-3200000 Hz, but the
+/// RTL2832 only divides its 28.8 MHz clock exactly at some of them, and above
+/// roughly 2.4 MS/s most dongles start dropping samples over USB. These are the
+/// values every other RTL tool offers, which is the point: a list the user
+/// recognises beats a spin box that can be dragged to a rate the radio will
+/// quietly refuse.
+pub const RTL_SAMPLE_RATES: &[f64] = &[
+    250_000.0,
+    1_024_000.0,
+    1_400_000.0,
+    1_800_000.0,
+    1_920_000.0,
+    2_048_000.0,
+    2_160_000.0,
+    2_400_000.0,
+    2_560_000.0,
+    2_880_000.0,
+    3_200_000.0,
+];
+
+/// The R820T/R828D tuner's gain table, dB.
+///
+/// librtlsdr stores these in tenths of a dB and a dongle accepts nothing else:
+/// `rtlsdr_set_tuner_gain` snaps whatever it is given to the nearest entry, so
+/// the spin box's 0.1 dB steps were 29 real settings wearing 497 costumes.
+/// These are the 29, and an R828D reports exactly that many in its `rtl_tcp`
+/// greeting.
+pub const RTL_GAINS: &[f64] = &[
+    0.0, 0.9, 1.4, 2.7, 3.7, 7.7, 8.7, 12.5, 14.4, 15.7, 16.6, 19.7, 20.7, 22.9, 25.4, 28.0, 29.7,
+    32.8, 33.8, 36.4, 37.2, 38.6, 40.2, 42.1, 43.4, 43.9, 44.5, 48.0, 49.6,
+];
+
+/// Nothing discrete to offer: the control stays a free numeric entry.
+pub const CONTINUOUS: &[f64] = &[];
+
 /// Every tunable the GUI exposes, with the limits of one backend.
 ///
 /// Units match the GUI widgets rather than the wire protocols: frequencies in
@@ -154,6 +191,14 @@ pub struct Limits {
     pub ppm: Limit<i32>,
     /// Hop crop, percent.
     pub crop: Limit<i32>,
+    /// The only sample rates this device accepts, Hz, ascending; empty when it
+    /// takes any value in [`Self::sample_rate`] and the GUI should show a spin
+    /// box instead of a drop-down.
+    pub sample_rate_choices: &'static [f64],
+    /// The only gains this device accepts, dB, ascending; empty for a spin box.
+    /// "Auto" is offered alongside these whenever [`Self::gain`]'s minimum is
+    /// negative, and is not listed here.
+    pub gain_choices: &'static [f64],
 }
 
 impl Limits {
@@ -161,13 +206,23 @@ impl Limits {
     pub const DEFAULT: Self = Self {
         sample_rate: Limit::new(0.0, 3_200_000.0, 2_560_000.0),
         bandwidth: Limit::new(0.0, 0.0, 0.0),
-        gain: Limit::new(-1.0, 49.6, 37.0),
+        // 37.2 rather than the round 37.0 the Qt build used, because 37.0 is
+        // not a gain an R820T has: librtlsdr snaps it to this very value. The
+        // old default was therefore a number the drop-down could not offer and
+        // the radio never used.
+        gain: Limit::new(-1.0, 49.6, 37.2),
         start_freq: Limit::new(0.0, 2200.0, 87.0),
         stop_freq: Limit::new(0.0, 2200.0, 108.0),
         bin_size: Limit::new(0.0, 2800.0, 10.0),
         interval: Limit::new(0.0, 3600.0, 1.0),
         ppm: Limit::new(-999, 999, 0),
-        crop: Limit::new(0, 99, 0),
+        // A fifth off each hop's edges by default. The RTL's decimation filter
+        // rolls off well before Nyquist, so the outermost bins of every hop read
+        // low; cropping them is what stops a sweep showing one scallop per hop
+        // instead of a flat noise floor.
+        crop: Limit::new(0, 99, 20),
+        sample_rate_choices: RTL_SAMPLE_RATES,
+        gain_choices: RTL_GAINS,
     };
 }
 
@@ -546,6 +601,76 @@ pub fn default_source() -> &'static dyn SpectrumSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The drop-downs walk these in order and `Limit::clamp` assumes the ends
+    /// are the ends, so an entry out of place would be a silently wrong menu.
+    #[test]
+    fn the_rtl_tables_are_ascending_and_within_their_limits() {
+        for table in [RTL_SAMPLE_RATES, RTL_GAINS] {
+            assert!(!table.is_empty());
+            assert!(
+                table.windows(2).all(|w| w[0] < w[1]),
+                "not ascending: {table:?}"
+            );
+        }
+
+        let limits = Limits::DEFAULT;
+        for rate in RTL_SAMPLE_RATES {
+            assert!(
+                *rate >= limits.sample_rate.min && *rate <= limits.sample_rate.max,
+                "{rate} Hz is outside the spin box's own range"
+            );
+        }
+        for gain in RTL_GAINS {
+            assert!(
+                *gain >= 0.0 && *gain <= limits.gain.max,
+                "{gain} dB is outside the spin box's own range"
+            );
+        }
+    }
+
+    /// `rtl_tcp`'s greeting reports how many gains the tuner has, and a real
+    /// R828D reports 29 -- the length of librtlsdr's `r820t_gains`. If this
+    /// ever disagrees, the table has drifted from the hardware.
+    #[test]
+    fn the_gain_table_is_the_length_the_tuner_reports() {
+        assert_eq!(RTL_GAINS.len(), 29);
+        assert_eq!(RTL_GAINS.first().copied(), Some(0.0));
+        assert_eq!(RTL_GAINS.last().copied(), Some(49.6));
+    }
+
+    /// Every backend's declared default has to be pickable, or selecting that
+    /// backend would leave the drop-down showing a value not in its own list.
+    #[test]
+    fn every_backend_default_is_on_its_own_menu() {
+        for source in registry() {
+            let limits = source.info().limits;
+            let id = source.info().id;
+            // A fixed limit hides the control altogether, so whatever it
+            // nominally defaults to is never shown.
+            if !limits.sample_rate_choices.is_empty() && !limits.sample_rate.is_fixed() {
+                assert!(
+                    limits
+                        .sample_rate_choices
+                        .contains(&limits.sample_rate.default),
+                    "{id}: default rate {} is not on its list",
+                    limits.sample_rate.default
+                );
+            }
+            if !limits.gain_choices.is_empty() {
+                assert!(
+                    limits.gain_choices.contains(&limits.gain.default) || limits.gain.default < 0.0,
+                    "{id}: default gain {} is not on its list",
+                    limits.gain.default
+                );
+            }
+            assert!(
+                limits.crop.default >= limits.crop.min && limits.crop.default <= limits.crop.max,
+                "{id}: crop default {} is outside its own range",
+                limits.crop.default
+            );
+        }
+    }
 
     #[test]
     fn linspace_matches_numpy() {

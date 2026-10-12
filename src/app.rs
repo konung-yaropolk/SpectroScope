@@ -807,29 +807,53 @@ impl SpectroScopeApp {
                         ui.label("Gain [dB]:");
                         // -1 is the backends' "let the device decide" sentinel,
                         // which the Qt build surfaced as the special value "auto".
-                        let mut gain = self.cfg.gain;
-                        let response = ui.add(
-                            egui::DragValue::new(&mut gain)
-                                .speed(0.5)
-                                .range(limits.gain.min..=limits.gain.max)
-                                .max_decimals(1)
-                                .custom_formatter(|v, _| {
-                                    if v < 0.0 {
-                                        "auto".to_owned()
-                                    } else {
-                                        format!("{v:.1}")
+                        if limits.gain_choices.is_empty() {
+                            let mut gain = self.cfg.gain;
+                            let response = ui.add(
+                                egui::DragValue::new(&mut gain)
+                                    .speed(0.5)
+                                    .range(limits.gain.min..=limits.gain.max)
+                                    .max_decimals(1)
+                                    .custom_formatter(|v, _| {
+                                        if v < 0.0 {
+                                            "auto".to_owned()
+                                        } else {
+                                            format!("{v:.1}")
+                                        }
+                                    })
+                                    .custom_parser(|s| {
+                                        if s.trim().eq_ignore_ascii_case("auto") {
+                                            Some(-1.0)
+                                        } else {
+                                            s.trim().parse().ok()
+                                        }
+                                    }),
+                            );
+                            if response.changed() {
+                                self.cfg.gain = gain;
+                            }
+                        } else {
+                            // The tuner snaps anything else to one of these
+                            // anyway, so dragging between them only ever moved
+                            // the label.
+                            egui::ComboBox::from_id_salt("spectroscope.gain")
+                                .selected_text(gain_label(self.cfg.gain))
+                                .show_ui(ui, |ui| {
+                                    if limits.gain.min < 0.0 {
+                                        ui.selectable_value(
+                                            &mut self.cfg.gain,
+                                            -1.0,
+                                            gain_label(-1.0),
+                                        );
                                     }
-                                })
-                                .custom_parser(|s| {
-                                    if s.trim().eq_ignore_ascii_case("auto") {
-                                        Some(-1.0)
-                                    } else {
-                                        s.trim().parse().ok()
+                                    for gain in limits.gain_choices {
+                                        ui.selectable_value(
+                                            &mut self.cfg.gain,
+                                            *gain,
+                                            gain_label(*gain),
+                                        );
                                     }
-                                }),
-                        );
-                        if response.changed() {
-                            self.cfg.gain = gain;
+                                });
                         }
                         ui.end_row();
 
@@ -1357,6 +1381,16 @@ impl eframe::App for SpectroScopeApp {
 
 /// `1.2 MB`, for the recording readout.
 #[cfg(not(target_arch = "wasm32"))]
+/// A tuner gain as the drop-down shows it, with the negative sentinel spelled
+/// out the way the Qt build spelled it.
+fn gain_label(db: f64) -> String {
+    if db < 0.0 {
+        "auto".to_owned()
+    } else {
+        format!("{db:.1} dB")
+    }
+}
+
 fn human_bytes(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["B", "kB", "MB", "GB"];
     let mut value = bytes as f64;
@@ -1486,6 +1520,25 @@ pub fn window_title() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The negative sentinel has to read as "auto" wherever it is shown, or the
+    /// drop-down would offer a nonsensical "-1.0 dB".
+    #[test]
+    fn gain_labels_spell_the_auto_sentinel_out() {
+        assert_eq!(gain_label(-1.0), "auto");
+        assert_eq!(gain_label(0.0), "0.0 dB");
+        assert_eq!(gain_label(37.2), "37.2 dB");
+        assert_eq!(gain_label(49.6), "49.6 dB");
+
+        let labels: Vec<String> = crate::sources::RTL_GAINS
+            .iter()
+            .map(|g| gain_label(*g))
+            .collect();
+        let mut unique = labels.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), labels.len(), "two gains share a label");
+    }
 
     /// Lay the side panel out at `width` and report the width it claims back.
     ///

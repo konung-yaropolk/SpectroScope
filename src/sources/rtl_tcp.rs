@@ -175,11 +175,39 @@ const MIN_INTEGRATION_SEGMENTS: usize = 4;
 /// and `rtl_tcp` forwards whole buffers, so after a retune command at least one
 /// complete buffer sampled at the *old* frequency can still be in flight.
 /// Those samples have to be thrown away or every hop smears its neighbour.
-const IN_FLIGHT_SAMPLES: usize = 131_072;
+///
+/// Half as much again as one buffer, because one exactly is demonstrably too
+/// little. Measured against a real `rtl_tcp` (R828D) with the socket drained to
+/// empty immediately before the retune, the old centre frequency persisted for
+/// 129024-139264 samples -- the same count at 250 kS/s as at 1.024 MS/s, which
+/// is what shows this to be a buffer-depth effect rather than a time-based one,
+/// and why the figure is in samples. 196608 clears the worst of those by 41%.
+///
+/// Not two whole buffers: every sample here is discarded once per hop, and a
+/// 34-hop sweep pays for it 34 times. A server with deeper buffering than the
+/// stock 256 kiB transfer would need more, and the symptom would be each hop
+/// faintly ghosting the one before it.
+const IN_FLIGHT_SAMPLES: usize = 196_608;
 
 /// Time allowance on top of [`IN_FLIGHT_SAMPLES`] for the command's round trip
 /// and the R820T PLL, which locks in well under a millisecond.
 const SETTLE_SECONDS: f64 = 0.005;
+
+/// Samples to discard after a retune: the buffers already in flight *plus* the
+/// command's round trip, never fewer than one transform.
+///
+/// The two allowances are summed. Taking the larger of them, as this once did,
+/// silently dropped the round trip whenever the in-flight figure was bigger --
+/// which, below 26 MS/s, is always.
+fn settle_samples_for(sample_rate: f64, fft_size: usize) -> usize {
+    let round_trip = sample_rate * SETTLE_SECONDS;
+    let round_trip = if round_trip.is_finite() && round_trip > 0.0 {
+        round_trip as usize
+    } else {
+        0
+    };
+    IN_FLIGHT_SAMPLES.saturating_add(round_trip).max(fft_size)
+}
 
 /// Refuse configurations whose sweep would be absurd rather than spending
 /// minutes per sweep or hundreds of megabytes on one frame.
@@ -298,9 +326,7 @@ impl SweepEngine {
         let integration_samples = ((sample_rate * hop_seconds) as usize)
             .max(MIN_INTEGRATION_SEGMENTS.saturating_mul(fft_size));
 
-        let settle_samples = ((sample_rate * SETTLE_SECONDS) as usize)
-            .max(IN_FLIGHT_SAMPLES)
-            .max(fft_size);
+        let settle_samples = settle_samples_for(sample_rate, fft_size);
 
         let welch = Welch::new(WelchConfig {
             fft_size,
@@ -643,6 +669,27 @@ mod native {
     /// rather than waiting for a TCP timeout that may never come.
     const STALL_TIMEOUTS: u32 = 20;
 
+    /// How often the byte rate is judged. Long enough for a fresh connection's
+    /// startup transient to average out, short enough that the warning beats
+    /// the first sweep or two onto the screen.
+    const THROUGHPUT_WINDOW: Duration = Duration::from_secs(5);
+
+    /// Fraction of the stream's own rate below which the link is called too
+    /// slow.
+    ///
+    /// Wide of 1.0 on purpose. A link that is keeping up measures a little
+    /// under the nominal rate anyway -- the reads are interleaved with the
+    /// transforms, and the average is taken from the moment the socket opens --
+    /// and 0.97 was close enough to fire on a link that was in fact fine. What
+    /// this has to separate is that from a link that cannot keep up at all,
+    /// which is not a near thing: the one that prompted all this was carrying
+    /// 68% of what it needed.
+    const THROUGHPUT_FLOOR: f64 = 0.90;
+
+    /// Reaching this fraction once settles the question for the rest of the
+    /// run, so a later idle spell cannot raise a false alarm.
+    const THROUGHPUT_HEALTHY: f64 = 0.98;
+
     struct TcpSession {
         stream: Arc<TcpStream>,
         alive: Arc<AtomicBool>,
@@ -692,6 +739,7 @@ mod native {
     ) -> Result<Box<dyn SourceSession>, SourceError> {
         let engine = SweepEngine::new(&cfg)?;
         let endpoint = super::endpoint(&cfg.device)?;
+        let sample_rate = cfg.sample_rate;
         let (stream, addr) = connect(&endpoint)?;
 
         // Commands are five bytes and their latency is what limits the hop
@@ -718,7 +766,7 @@ mod native {
                 .name("spectroscope-rtl-tcp".into())
                 .spawn(move || {
                     sink.started(engine.hops());
-                    run(&stream, engine, &sink, &alive);
+                    run(&stream, engine, &sink, &alive, sample_rate);
                     alive.store(false, Ordering::SeqCst);
                     sink.stopped();
                 })
@@ -744,11 +792,93 @@ mod native {
         Ok(())
     }
 
-    fn run(socket: &TcpStream, mut engine: SweepEngine, sink: &EventSink, alive: &AtomicBool) {
+    /// Watches how fast bytes actually arrive against how fast the radio makes
+    /// them.
+    ///
+    /// `rtl_tcp` streams in real time and never waits: a link that cannot carry
+    /// the full rate does not slow the radio down, it makes the server's queue
+    /// grow without bound. Every hop then integrates samples from further and
+    /// further in the past -- tuned, by then, to some other frequency
+    /// altogether -- so the display degrades from "correct" to "noise" over the
+    /// first few sweeps and never recovers. Nothing downstream can repair that,
+    /// and nothing else in the program would ever notice it, so it is caught
+    /// here and said plainly.
+    struct Throughput {
+        started: std::time::Instant,
+        next_check: Duration,
+        bytes: u64,
+        needed: f64,
+        settled: bool,
+    }
+
+    impl Throughput {
+        fn new(sample_rate: f64) -> Self {
+            Self {
+                started: std::time::Instant::now(),
+                next_check: THROUGHPUT_WINDOW,
+                bytes: 0,
+                // One complex sample is one I byte plus one Q byte.
+                needed: sample_rate * 2.0,
+                settled: !(sample_rate.is_finite() && sample_rate > 0.0),
+            }
+        }
+
+        /// Returns the complaint to log, once, if the link is too slow.
+        ///
+        /// The average is cumulative rather than per window: a shortfall this
+        /// is meant to catch never makes itself up, because the server has no
+        /// way to send the backlog faster than the radio is filling it, so the
+        /// running average stays down while a one-off stall washes out of it.
+        fn record(&mut self, bytes: usize) -> Option<String> {
+            self.bytes = self.bytes.saturating_add(bytes as u64);
+            if self.settled {
+                return None;
+            }
+            let elapsed = self.started.elapsed();
+            if elapsed < self.next_check {
+                return None;
+            }
+            self.next_check = elapsed + THROUGHPUT_WINDOW;
+
+            let got = self.bytes as f64 / elapsed.as_secs_f64();
+            if got >= self.needed * THROUGHPUT_HEALTHY {
+                self.settled = true;
+                return None;
+            }
+            if got >= self.needed * THROUGHPUT_FLOOR {
+                // Neither clearly well nor clearly ill: look again later.
+                return None;
+            }
+            self.settled = true;
+            // What the link did carry, as a sample rate, rounded down a little
+            // so the suggestion has some headroom of its own.
+            let affordable = (got / 2.0 * 0.9 / 1e4).floor() * 1e4;
+            Some(format!(
+                "rtl_tcp: the link is delivering {:.2} MB/s but {:.3} MS/s needs {:.2} MB/s. \
+                 The server cannot slow the radio down, so its queue grows and every hop ends up \
+                 reading samples from an earlier, differently tuned moment -- the spectrum will \
+                 look like noise. Lower the sample rate to about {:.3} MS/s or less, or use a \
+                 faster link.",
+                got / 1e6,
+                self.needed / 2.0 / 1e6,
+                self.needed / 1e6,
+                affordable / 1e6,
+            ))
+        }
+    }
+
+    fn run(
+        socket: &TcpStream,
+        mut engine: SweepEngine,
+        sink: &EventSink,
+        alive: &AtomicBool,
+        sample_rate: f64,
+    ) {
         let mut buf = vec![0u8; READ_BUF];
         let mut reader = socket;
         let mut announced = false;
         let mut timeouts = 0u32;
+        let mut throughput = Throughput::new(sample_rate);
 
         'run: loop {
             if !alive.load(Ordering::SeqCst) {
@@ -790,6 +920,9 @@ mod native {
                 }
             };
             timeouts = 0;
+            if let Some(complaint) = throughput.record(n) {
+                sink.error(complaint);
+            }
 
             let mut chunk: &[u8] = &buf[..n];
             loop {
@@ -1078,13 +1211,15 @@ static INFO: SourceInfo = SourceInfo {
         // unusable on real hardware) are the device's problem, not ours.
         sample_rate: Limit::new(225_001.0, 3_200_000.0, 2_048_000.0),
         bandwidth: Limit::new(0.0, 0.0, 0.0),
-        gain: Limit::new(-1.0, 49.6, 37.0),
+        gain: Limit::new(-1.0, 49.6, 37.2),
         start_freq: Limit::new(0.0, 1766.0, 87.0),
         stop_freq: Limit::new(0.0, 1766.0, 108.0),
         bin_size: Limit::new(0.0, 2800.0, 10.0),
         interval: Limit::new(0.0, 3600.0, 1.0),
         ppm: Limit::new(-999, 999, 0),
-        crop: Limit::new(0, 49, 0),
+        crop: Limit::new(0, 49, 20),
+        sample_rate_choices: super::RTL_SAMPLE_RATES,
+        gain_choices: super::RTL_GAINS,
     },
 };
 
@@ -1151,7 +1286,7 @@ mod tests {
     /// Bytes per hop of `small_cfg`: everything discarded while settling plus
     /// the minimum integration.
     fn small_hop_bytes() -> usize {
-        2 * (IN_FLIGHT_SAMPLES + MIN_INTEGRATION_SEGMENTS * MIN_FFT)
+        2 * (settle_samples_for(250_000.0, MIN_FFT) + MIN_INTEGRATION_SEGMENTS * MIN_FFT)
     }
 
     /// A greeting followed by `len` bytes of non-constant IQ, so a real PSD has

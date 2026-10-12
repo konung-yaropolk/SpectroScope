@@ -33,6 +33,10 @@ static INFO: SourceInfo = SourceInfo {
         interval: Limit::new(0.0, 3600.0, 0.0),
         ppm: Limit::new(0, 0, 0),
         crop: Limit::new(0, 0, 0),
+        // A HackRF, not an RTL dongle: its rate is fixed and its gain is three
+        // separate amplifier stages, so neither RTL list applies.
+        sample_rate_choices: super::CONTINUOUS,
+        gain_choices: super::CONTINUOUS,
     },
 };
 
