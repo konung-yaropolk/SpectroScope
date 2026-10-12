@@ -187,7 +187,7 @@ eframe = { version = "0.32", default-features = false, features = [
 ] }
 
 [dev-dependencies]
-ron = "0.10"
+ron = "0.12"
 # Only so a test can read this file back and check the Android manifest
 # metadata is still wired up; see `the_android_manifest_can_be_launched`.
 toml = "0.9"
