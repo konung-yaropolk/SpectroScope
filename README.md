@@ -26,8 +26,14 @@ server: the page is static, and every sweep is computed in the tab.
 The `demo` backend makes it usable with no hardware at all. Real hardware works
 too, through the `rtl_tcp` backend — but a browser cannot open a raw TCP socket,
 so that needs a WebSocket bridge in front of the server (see
-[BUILDING.md](BUILDING.md#web)). Recording and image export are desktop-only,
-because a tab has no filesystem to write to.
+[BUILDING.md](BUILDING.md#web)).
+
+**Saving the waterfall works here too**, as a download: the same encoder runs in
+the tab and the browser is handed the finished PNG or TIFF, extension first —
+so the ImageJ file a browser produces is the one the desktop produces. What a
+tab cannot do is *record*: writing a sweep at a time for hours needs somewhere
+to append to, which is the whole reason an interrupted capture is still
+readable, and that stays desktop-only.
 
 Needs a current browser with WebGPU or WebGL2 (Chrome/Edge 113+, Firefox 141+).
 
@@ -79,6 +85,12 @@ developer certificate):
 The APK carries both ABIs, so one file covers every phone. Three things are
 worth knowing before you install it:
 
+- **v0.1.0's APK does not work — skip it.** Its generated manifest had no
+  `<activity>` element, so it installed, showed no launcher icon and could not
+  be started. The cause was a packaging default (`cargo-apk2` treats a missing
+  activity as a warning, not an error); it is fixed, the manifest is now
+  written out in full, and the release workflow decodes the finished APK and
+  fails if the launcher wiring or the icon is missing again.
 - It is **signed with a throwaway key** generated during the build, unless the
   repository has a release keystore configured. It installs, but Android will
   refuse to upgrade over an APK from an earlier release, because the keys

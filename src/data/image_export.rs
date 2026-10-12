@@ -31,6 +31,22 @@ pub enum ImageFormat {
 }
 
 impl ImageFormat {
+    /// The media type a browser needs to be told when offered the bytes.
+    pub fn mime(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Tiff => "image/tiff",
+        }
+    }
+
+    /// The extension this container is written with.
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Tiff => "tif",
+        }
+    }
+
     /// Pick from the path's extension, defaulting to PNG.
     pub fn from_path(path: &Path) -> Self {
         match path.extension().and_then(|e| e.to_str()) {
@@ -100,8 +116,6 @@ impl Default for Axes {
 }
 
 impl Axes {
-    // Only the PNG path annotates, and that is desktop-only.
-    #[cfg(not(target_arch = "wasm32"))]
     fn annotation(&self) -> super::annotate::Annotation {
         super::annotate::Annotation {
             start_hz: self.start_hz,
@@ -169,6 +183,33 @@ pub fn render_rgb(
     Some((width, height, rgb))
 }
 
+/// Encode the history into `format`, in memory.
+///
+/// Encoding and writing are separate because the two platforms need different
+/// halves: the desktop writes the bytes to a path the user picked, and the
+/// browser hands the identical bytes to a download. Everything that decides
+/// what the image *is* happens here, once.
+pub fn encode(
+    format: ImageFormat,
+    history: &HistoryBuffer,
+    lut: &[[u8; 3]; 256],
+    low: f32,
+    high: f32,
+    axes: Axes,
+) -> Result<Encoded, ExportError> {
+    match format {
+        ImageFormat::Png => encode_png(history, lut, low, high, axes),
+        ImageFormat::Tiff => encode_tiff(history, lut, low, high, axes),
+    }
+}
+
+/// An encoded image: its dimensions, including any margins, and its bytes.
+pub struct Encoded {
+    pub width: u32,
+    pub height: u32,
+    pub bytes: Vec<u8>,
+}
+
 /// Write the history to `path`, choosing the container from its extension.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn save(
@@ -179,22 +220,19 @@ pub fn save(
     high: f32,
     axes: Axes,
 ) -> Result<(u32, u32), ExportError> {
-    match ImageFormat::from_path(path) {
-        ImageFormat::Png => save_png(path, history, lut, low, high, axes),
-        ImageFormat::Tiff => save_tiff(path, history, lut, low, high, axes),
-    }
+    let img = encode(ImageFormat::from_path(path), history, lut, low, high, axes)?;
+    std::fs::write(path, &img.bytes).map_err(|e| ExportError::Io(e.to_string()))?;
+    Ok((img.width, img.height))
 }
 
 /// Colour-mapped 8-bit RGB, inside a labelled frequency/time frame.
-#[cfg(not(target_arch = "wasm32"))]
-fn save_png(
-    path: &Path,
+fn encode_png(
     history: &HistoryBuffer,
     lut: &[[u8; 3]; 256],
     low: f32,
     high: f32,
     axes: Axes,
-) -> Result<(u32, u32), ExportError> {
+) -> Result<Encoded, ExportError> {
     let (w, h, rgb) = render_rgb(history, lut, low, high).ok_or(ExportError::Empty)?;
     // A picture is read by eye, so it gets the ruler; the TIFF stays raw.
     let (width, height, rgb) = super::annotate::with_axes(w, h, &rgb, &axes.annotation());
@@ -202,13 +240,16 @@ fn save_png(
     let buffer = image::RgbImage::from_raw(width, height, rgb)
         .ok_or_else(|| ExportError::Encode("buffer does not match its dimensions".to_owned()))?;
 
-    let file = std::fs::File::create(path).map_err(|e| ExportError::Io(e.to_string()))?;
-    let mut writer = std::io::BufWriter::new(file);
+    let mut bytes = std::io::Cursor::new(Vec::new());
     buffer
-        .write_to(&mut writer, image::ImageFormat::Png)
+        .write_to(&mut bytes, image::ImageFormat::Png)
         .map_err(|e| ExportError::Encode(e.to_string()))?;
 
-    Ok((width, height))
+    Ok(Encoded {
+        width,
+        height,
+        bytes: bytes.into_inner(),
+    })
 }
 
 /// 32-bit float TIFF carrying the dB values, with the colour map and the
@@ -218,15 +259,13 @@ fn save_png(
 /// window, and shows what the waterfall showed -- while *Analyze > Measure* and
 /// every plugin still see dB. Deflate keeps it to a reasonable size and is one
 /// of the two compressions ImageJ's own TIFF reader understands.
-#[cfg(not(target_arch = "wasm32"))]
-fn save_tiff(
-    path: &Path,
+fn encode_tiff(
     history: &HistoryBuffer,
     lut: &[[u8; 3]; 256],
     low: f32,
     high: f32,
     axes: Axes,
-) -> Result<(u32, u32), ExportError> {
+) -> Result<Encoded, ExportError> {
     use fast_tiff_lib::{
         Compression, DisplayMode, MetadataFormat, SampleType, StackMetaWrite, TiffWriter,
         WriterOptions,
@@ -293,16 +332,24 @@ fn save_tiff(
         .metadata_format(MetadataFormat::ImageJ)
         .metadata(meta);
 
-    let mut writer =
-        TiffWriter::create(path, options).map_err(|e| ExportError::Io(e.to_string()))?;
+    // Into a buffer rather than straight to a path: `TiffWriter` is generic
+    // over `Write + Seek`, and a `Cursor` satisfies both without a filesystem,
+    // which is what lets the browser build produce the identical file.
+    let mut writer = TiffWriter::new(std::io::Cursor::new(Vec::new()), options)
+        .map_err(|e| ExportError::Encode(e.to_string()))?;
     writer
         .write_frame_f32(&raw)
         .map_err(|e| ExportError::Encode(e.to_string()))?;
-    writer
+    let bytes = writer
         .finish()
-        .map_err(|e| ExportError::Io(e.to_string()))?;
+        .map_err(|e| ExportError::Encode(e.to_string()))?
+        .into_inner();
 
-    Ok((width, height))
+    Ok(Encoded {
+        width,
+        height,
+        bytes,
+    })
 }
 
 #[cfg(test)]

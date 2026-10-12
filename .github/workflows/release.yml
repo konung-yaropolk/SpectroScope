@@ -420,19 +420,19 @@ jobs:
   # sideloadable file. Pinned exactly, because a one-maintainer fork is the
   # wrong thing to float and a release job the wrong place to discover a change.
   #
-  # `continue-on-error`, and on the JOB rather than a step. Android is the one
-  # platform here with nothing standing behind it: a single-maintainer
-  # toolchain, an .apk whose packaging no other job exercises, and a build
-  # driven by Cargo.toml metadata that nothing else validates. When it breaks it
-  # should cost this one asset and leave the release and the other packages
-  # alone. Step-level would be worse than useless -- it would paint the job
-  # green and happily attach whatever file was lying around. (ci.yml's
-  # check-android job compiles both ABIs on every push, so a *source* break is
-  # caught long before here; what is left for this flag to absorb is the
-  # toolchain and the packaging.)
+  # NOT `continue-on-error`, deliberately, and this is the second version of
+  # that decision. It was allowed to fail on the grounds that nothing stood
+  # behind the Android build -- and the first release proved the cost of that:
+  # the job went green, attached an APK with no <activity> in its manifest, and
+  # the only person who found out was the user who installed it. A packager
+  # that is allowed to fail is also allowed to succeed at producing rubbish.
+  #
+  # Jobs here are independent, so a red build-android still blocks nothing: the
+  # release exists, the other twelve assets attach, and the one broken thing
+  # shows up red in the checks list where somebody will see it. That is the
+  # property worth having, and it costs no flag.
   build-android:
     runs-on: ubuntu-24.04
-    continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -586,11 +586,24 @@ jobs:
       - name: Build the APK
         run: cargo apk2 build --lib --release
 
-      # The tripwire, for the same reason as the lipo slice check in the macOS
-      # job. An APK missing an ABI installs perfectly on a phone of the other
-      # kind and fails for everyone else at install time; an unsigned APK
-      # installs nowhere at all. Neither shows up in the build log, so both are
-      # asserted rather than printed.
+      # The manifest check, and the reason this job stopped being allowed to
+      # fail. cargo-apk2 models `application.activities` as a Vec that defaults
+      # to empty and prints a *warning* when it is -- so a Cargo.toml missing
+      # the activity block yields an APK with no <activity> element, which
+      # installs, shows no launcher icon and cannot be started. Release v0.1.0
+      # shipped exactly that, with a green build and no sign of trouble
+      # anywhere in the log. Nothing upstream will fail on it, so the manifest
+      # is read back out of the finished APK and asserted here.
+      - name: Check the APK can actually be launched
+        run: >
+          python scripts/apk_manifest.py target/release/apk/SpectroScope.apk
+          --require-launcher --require-icon
+
+      # The other two ways a well-formed APK is still useless. An APK missing
+      # an ABI installs perfectly on a phone of the other kind and fails for
+      # everyone else at install time; an unsigned APK installs nowhere at all.
+      # Neither shows up in the build log, so both are asserted rather than
+      # printed -- the same reasoning as the lipo slice check in the macOS job.
       - name: Check the APK is signed and carries both ABIs
         run: |
           set -euo pipefail

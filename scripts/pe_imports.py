@@ -109,6 +109,20 @@ def main() -> int:
     for name in sorted(names, key=str.lower):
         print(f"  {name}")
 
+    # A --forbid check that found nothing is only good news if the parse
+    # worked. Both directories can come back empty -- an unmapped RVA, a
+    # rewritten header, a bug in the walk above -- and the result would be an
+    # empty list and a cheerful exit 0, which is exactly the "the CRT is
+    # static now" answer the caller is hoping for. Every Windows executable
+    # imports KERNEL32, so its absence means the parse failed, not that the
+    # binary is unusually self-contained.
+    if not any(n.lower().startswith("kernel32") for n in names):
+        print(
+            f"::error::{args.binary}: no KERNEL32 import found, so the import "
+            "table was not parsed -- the result below would be meaningless"
+        )
+        return 2
+
     bad = [
         name
         for name in names

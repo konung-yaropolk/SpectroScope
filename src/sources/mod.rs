@@ -525,12 +525,19 @@ pub fn find(id: &str) -> Option<&'static dyn SpectrumSource> {
 }
 
 /// The backend used when the config names an unknown one.
+///
+/// Android goes with the browser rather than with the desktop. It is a
+/// `not(wasm32)` target, so it used to take `soapy_power` -- a backend that
+/// cannot possibly work there, because Android does not let an application
+/// execute a helper binary. A first run therefore opened on a backend whose
+/// Start button could only ever fail. `demo` needs nothing, which is the whole
+/// point of it being there.
 pub fn default_source() -> &'static dyn SpectrumSource {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     {
         &soapy_power::SoapyPower
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
     {
         &demo::Demo
     }
@@ -562,6 +569,20 @@ mod tests {
     #[test]
     fn default_source_is_registered() {
         assert!(find(default_source().info().id).is_some());
+    }
+
+    /// Whatever a first run opens on has to be a backend that can actually
+    /// run on that platform.
+    #[test]
+    fn the_default_backend_needs_no_helper_binary_where_none_can_run() {
+        let id = default_source().info().id;
+        if cfg!(any(target_arch = "wasm32", target_os = "android")) {
+            assert_eq!(
+                id, "demo",
+                "neither a browser nor Android can spawn a sweep program, so \
+                 anything but a built-in backend opens on a dead Start button"
+            );
+        }
     }
 
     #[test]

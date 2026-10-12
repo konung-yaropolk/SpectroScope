@@ -43,8 +43,52 @@ pub const APP_ID: &str = "spectroscope";
 // ---------------------------------------------------------------------------
 
 #[cfg(target_arch = "wasm32")]
-mod web {
+pub mod web {
     use wasm_bindgen::prelude::*;
+
+    /// Hand `bytes` to the browser as a file the user downloads.
+    ///
+    /// The nearest thing a tab has to "Save as...". There is no filesystem to
+    /// write to and no path to pick, so the bytes become an in-memory Blob,
+    /// the Blob gets a temporary object URL, and a detached `<a download>` is
+    /// clicked to make the browser offer it. Where the file ends up, and under
+    /// what name, is then between the browser and its user -- `name` is only
+    /// a suggestion.
+    ///
+    /// The object URL is revoked immediately afterwards. That is safe because
+    /// the click has already handed the browser its own reference to the Blob,
+    /// and skipping it would pin every exported image in memory for the life
+    /// of the page -- which, for a full waterfall, is tens of megabytes each.
+    pub fn download(name: &str, mime: &str, bytes: &[u8]) -> Result<(), String> {
+        let document = web_sys::window()
+            .and_then(|w| w.document())
+            .ok_or("no document")?;
+
+        // `Uint8Array::from` copies into the JS heap; the Blob then owns that
+        // copy, so the Rust buffer can go out of scope the moment we return.
+        let array = js_sys::Array::new();
+        array.push(&js_sys::Uint8Array::from(bytes).into());
+
+        let options = web_sys::BlobPropertyBag::new();
+        options.set_type(mime);
+        let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&array, &options)
+            .map_err(|e| format!("could not build the blob: {e:?}"))?;
+
+        let url = web_sys::Url::create_object_url_with_blob(&blob)
+            .map_err(|e| format!("could not create an object URL: {e:?}"))?;
+
+        let anchor = document
+            .create_element("a")
+            .map_err(|e| format!("could not create the link: {e:?}"))?
+            .dyn_into::<web_sys::HtmlAnchorElement>()
+            .map_err(|_| "not an anchor".to_owned())?;
+        anchor.set_href(&url);
+        anchor.set_download(name);
+        anchor.click();
+
+        let _ = web_sys::Url::revoke_object_url(&url);
+        Ok(())
+    }
 
     /// Mount the application on the canvas with the given element id.
     ///

@@ -51,6 +51,20 @@ egui_plot = "0.33"
 # --- data / infra ------------------------------------------------------------
 bytemuck = { version = "1", features = ["derive"] }
 crossbeam-channel = "0.5"
+
+# --- image export ------------------------------------------------------------
+# Every target, not just the desktop ones: the browser build saves the
+# waterfall too, as a download rather than to a path, and it encodes the very
+# same bytes. Both are pure Rust with their default features off, so neither
+# costs the wasm bundle a C dependency.
+#
+# `image` is just the PNG encoder (and the decoder the desktop window icon
+# uses); eframe already pulls the crate in, so enabling one feature is free.
+# `fast-tiff-lib` writes the 32-bit float ImageJ TIFF -- `default-features =
+# false` drops its memory map, which only a reader wants, and the ZSTD codec,
+# whose C dependency is not worth it for a Deflate-compressed file.
+image = { version = "0.25", default-features = false, features = ["png"] }
+fast-tiff-lib = { version = "0.21", default-features = false }
 log = "0.4"
 num-complex = "0.4"
 rustfft = "6"
@@ -65,17 +79,6 @@ env_logger = { version = "0.11", default-features = false, features = [
     "auto-color",
     "humantime",
 ] }
-
-# Just the PNG decoder: for the window icon, and for the colour-mapped
-# waterfall export. eframe already pulls `image` in, so enabling one of its
-# features costs nothing extra. TIFF is handled by fast-tiff-lib below, which
-# can write the raw float data ImageJ wants.
-image = { version = "0.25", default-features = false, features = ["png"] }
-
-# ImageJ-compatible TIFF writing. `default-features = false` drops the memory
-# map (we only write) and the ZSTD codec, whose C dependency is not worth
-# pulling in for a Deflate-compressed file.
-fast-tiff-lib = { version = "0.21", default-features = false }
 
 # The native graphics backends. Cargo unifies features across the graph, so
 # naming wgpu here is what gives eframe's own copy its backends. Each of these
@@ -139,6 +142,10 @@ version = "0.3"
 features = [
     "BinaryType",
     "Blob",
+    # Saving the waterfall in the browser: a Blob with a MIME type, a temporary
+    # object URL, and an <a download> to click. See `web::download`.
+    "BlobPropertyBag",
+    "HtmlAnchorElement",
     "CloseEvent",
     "Document",
     "Element",
@@ -181,6 +188,9 @@ eframe = { version = "0.32", default-features = false, features = [
 
 [dev-dependencies]
 ron = "0.10"
+# Only so a test can read this file back and check the Android manifest
+# metadata is still wired up; see `the_android_manifest_can_be_launched`.
+toml = "0.9"
 
 # Host-side only: embeds the icon and version strings into the Windows .exe.
 [target.'cfg(windows)'.build-dependencies]
@@ -315,6 +325,10 @@ assets = [
 package = "cz.eutopia.spectroscope"
 build_targets = ["aarch64-linux-android", "armv7-linux-androideabi"]
 apk_name = "SpectroScope"
+# Launcher icons, downscaled from the committed PNGs into the density buckets
+# aapt2 expects. `aapt2 compile --dir` reads this tree as-is, and the path is
+# resolved against the crate root.
+resources = "packaging/android/res"
 
 [package.metadata.android.sdk]
 min_sdk_version = 26
@@ -329,6 +343,56 @@ required = false
 
 [package.metadata.android.application]
 label = "SpectroScope"
+icon = "@mipmap/ic_launcher"
+# The whole window is one wgpu surface. A system action bar over it would eat
+# rows of the waterfall and draw a title nobody needs.
+theme = "@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
+
+# The activity -- and it is not optional, which is the whole story of why the
+# v0.1.0 APK installed and then did nothing.
+#
+# cargo-apk2 models `application.activities` as a `Vec<Activity>` that defaults
+# to EMPTY, and when it is empty it prints a warning to stderr and carries on.
+# The manifest it then generates has no `<activity>` element at all, so there is
+# nothing for the launcher to show and nothing for the system to start: the APK
+# installs, no icon appears, and tapping it from a package manager does nothing.
+# Decoding v0.1.0's AndroidManifest.xml showed exactly that -- `<application>`
+# with no children but two stray elements. (The original rust-mobile/cargo-apk
+# synthesised a default activity; this fork does not.)
+#
+# `the_android_manifest_can_be_launched` in src/lib.rs is what keeps this block
+# from being deleted or renamed by accident, and the release workflow decodes
+# the built APK's manifest and fails if the launcher wiring is not in it.
+[[package.metadata.android.application.activity]]
+# The stock NativeActivity: the Rust side is an `ANativeActivity_onCreate`
+# export in the cdylib (from `android-activity`), so there is no Java subclass
+# to name here.
+name = "android.app.NativeActivity"
+# Handle these in-process instead of being destroyed and recreated. A recreate
+# would drop the GPU ring buffer the whole waterfall history lives in, so a
+# rotation would wipe the display.
+config_changes = "orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|screenLayout|density|uiMode|navigation"
+# Re-tapping the launcher icon returns to the running sweep rather than
+# stacking a second copy of an application that owns a radio.
+launch_mode = "singleTop"
+# Required from Android 12 for any activity carrying an intent filter.
+# cargo-apk2 would fill it in for target_sdk >= 31, but an explicit value is
+# one less thing that depends on the tool's version.
+exported = true
+resizeable_activity = true
+window_soft_input_mode = "adjustResize"
+
+# Which library holds `ANativeActivity_onCreate`. cargo-apk2 fills a missing
+# value in from the `[lib]` name, but naming it means a rename of the crate
+# cannot silently point this at nothing.
+[[package.metadata.android.application.activity.meta_data]]
+name = "android.app.lib_name"
+value = "spectroscope"
+
+# What actually puts the icon in the launcher.
+[[package.metadata.android.application.activity.intent_filter]]
+actions = ["android.intent.action.MAIN"]
+categories = ["android.intent.category.LAUNCHER"]
 
 # ---------------------------------------------------------------------------
 # Windows packaging

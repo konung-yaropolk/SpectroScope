@@ -29,6 +29,14 @@ const MAX_FRAMES_PER_REPAINT: usize = 8;
 /// Share of the window the controls panel takes on a first run.
 const PANEL_WIDTH_FRACTION: f32 = 0.20;
 
+/// What the browser is offered when no name has been typed.
+///
+/// A name rather than a path: in a tab the user does not choose where it
+/// lands, only what it is called, and `.png` is the half of the pair somebody
+/// looking at a picture wants.
+#[cfg(target_arch = "wasm32")]
+const DEFAULT_IMAGE_NAME: &str = "spectroscope-waterfall.png";
+
 /// Narrowest the controls panel may be dragged, in points.
 ///
 /// Not a taste call: it is what the widest row in the panel measures once
@@ -228,23 +236,76 @@ impl SpectroScopeApp {
         }
     }
 
-    /// Write the stored history out as an image.
+    /// What the frequency and time axes were when the image was taken.
+    ///
+    /// The pixels alone do not say what they are of, so this travels with them
+    /// into the TIFF metadata and onto the PNG's printed ruler.
+    fn image_axes(&self) -> crate::data::image_export::Axes {
+        match self.storage.x() {
+            Some(x) if x.len() > 1 => crate::data::image_export::Axes {
+                start_hz: x[0],
+                bin_hz: (x[x.len() - 1] - x[0]) / (x.len() - 1) as f64,
+                sweep_s: self.sweep_time,
+                newest_unix: self.storage.timestamp(),
+                plan: self.cfg.active_band_plan(),
+                annotate_tiff: self.cfg.annotate_tiff,
+            },
+            _ => crate::data::image_export::Axes::default(),
+        }
+    }
+
+    /// Hand the waterfall to the browser as a download.
+    ///
+    /// A tab has no path to save to, so the same encoder runs and the bytes go
+    /// to the browser instead of to a file. The container comes from the name's
+    /// extension, exactly as it does from the chosen path on the desktop, so
+    /// the two builds produce the same two kinds of file.
+    #[cfg(target_arch = "wasm32")]
+    fn download_waterfall(&mut self) {
+        use crate::data::image_export::{self, ImageFormat};
+
+        let typed = self.cfg.waterfall_image_file.trim();
+        let name = if typed.is_empty() {
+            DEFAULT_IMAGE_NAME.to_owned()
+        } else {
+            typed.to_owned()
+        };
+        let format = ImageFormat::from_path(std::path::Path::new(&name));
+
+        let axes = self.image_axes();
+        let encoded = image_export::encode(
+            format,
+            self.storage.history(),
+            self.cfg.levels.lut(),
+            self.cfg.levels.low,
+            self.cfg.levels.high,
+            axes,
+        );
+        match encoded {
+            Ok(img) => match crate::web::download(&name, format.mime(), &img.bytes) {
+                Ok(()) => self.push_log(format!(
+                    "Saved waterfall {}x{} as {name} ({} kB)",
+                    img.width,
+                    img.height,
+                    img.bytes.len() / 1024
+                )),
+                Err(e) => {
+                    self.push_log(format!("Could not start the download: {e}"));
+                    self.error = Some(format!("Could not start the download: {e}"));
+                }
+            },
+            Err(e) => {
+                self.push_log(format!("Could not save waterfall: {e}"));
+                self.error = Some(format!("Could not save waterfall: {e}"));
+            }
+        }
+    }
+
+    /// Write the stored history out as an image file.
     #[cfg(not(target_arch = "wasm32"))]
     fn save_waterfall(&mut self, path: std::path::PathBuf) {
         {
-            // The axes only mean anything alongside the pixels, so they
-            // travel with them into the TIFF metadata.
-            let axes = match self.storage.x() {
-                Some(x) if x.len() > 1 => crate::data::image_export::Axes {
-                    start_hz: x[0],
-                    bin_hz: (x[x.len() - 1] - x[0]) / (x.len() - 1) as f64,
-                    sweep_s: self.sweep_time,
-                    newest_unix: self.storage.timestamp(),
-                    plan: self.cfg.active_band_plan(),
-                    annotate_tiff: self.cfg.annotate_tiff,
-                },
-                _ => crate::data::image_export::Axes::default(),
-            };
+            let axes = self.image_axes();
 
             let result = crate::data::image_export::save(
                 &path,
@@ -897,22 +958,80 @@ impl SpectroScopeApp {
         egui::CollapsingHeader::new("Recording")
             .default_open(false)
             .show(ui, |ui| {
-                // A browser has no path-addressable filesystem, so there is
-                // nothing to point a recorder at; saying so beats offering
-                // controls whose file picker can only ever return nothing.
                 #[cfg(target_arch = "wasm32")]
-                ui.label(
-                    egui::RichText::new(
-                        "Recording and image export need a filesystem, so \
-                         they are only available in the desktop build.",
-                    )
-                    .small()
-                    .weak(),
-                );
+                self.export_controls(ui);
 
                 #[cfg(not(target_arch = "wasm32"))]
                 self.recording_controls(ui);
             });
+    }
+
+    /// Image export in the browser.
+    ///
+    /// Only half of the desktop panel survives the move into a tab, and the
+    /// halves divide on whether the feature needs somewhere to *append*.
+    /// Recording does -- it writes a sweep at a time for hours, so that a
+    /// capture cut short is still a readable file, and nothing a page can hold
+    /// gives that. Saving the waterfall does not: it is one buffer, encoded
+    /// once, and a browser already has a way to hand the user a finished file.
+    #[cfg(target_arch = "wasm32")]
+    fn export_controls(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            egui::RichText::new(
+                "Recording sweeps to a file needs somewhere to append to, so it \
+                 is desktop-only. Saving the waterfall is not -- it is encoded \
+                 here and handed to the browser as a download.",
+            )
+            .small()
+            .weak(),
+        );
+        ui.add_space(4.0);
+
+        ui.horizontal(|ui| {
+            ui.label("Save as:");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.cfg.waterfall_image_file)
+                        .hint_text(DEFAULT_IMAGE_NAME)
+                        .desired_width(ui.available_width().max(24.0)),
+                );
+            });
+        })
+        .response
+        .on_hover_text(
+            "The extension picks the container, the same as the save dialog does \
+             on the desktop: .png for a picture with the ruler drawn on, .tif for \
+             the raw 32-bit values ImageJ measures. The browser decides where it \
+             lands.",
+        );
+
+        ui.checkbox(&mut self.cfg.annotate_tiff, "Label the TIFF too")
+            .on_hover_text(
+                "Draw the ruler and band plan into a saved TIFF as well. They go \
+                 in at the display window's own extremes so the colour map paints \
+                 them -- but they do overwrite those pixels, which the PNG does not.",
+            );
+
+        let have_history = !self.storage.history().is_empty();
+        if ui
+            .add_enabled(
+                have_history,
+                egui::Button::new("Save waterfall").min_size(egui::vec2(0.0, 24.0)),
+            )
+            .on_hover_text("Encode the stored history and download it, one pixel per bin")
+            .clicked()
+        {
+            self.download_waterfall();
+        }
+
+        if have_history {
+            let h = self.storage.history();
+            ui.label(
+                egui::RichText::new(format!("{} x {} px", h.bins(), h.len()))
+                    .small()
+                    .weak(),
+            );
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
