@@ -194,7 +194,7 @@ eframe = { version = "0.32", default-features = false, features = [
 ron = "0.10"
 # Only so a test can read this file back and check the Android manifest
 # metadata is still wired up; see `the_android_manifest_can_be_launched`.
-toml = "0.9"
+toml = "1.1"
 
 # Host-side only: embeds the icon and version strings into the Windows .exe.
 [target.'cfg(windows)'.build-dependencies]
