@@ -328,6 +328,109 @@ impl SpectroScopeApp {
         }
     }
 
+    /// Replace what is on screen with the sweeps stored in a recording.
+    ///
+    /// The point of the recording format is that it is the same one
+    /// `soapy_power -F soapy_power_bin` writes and the same one a *Baseline* is
+    /// read from, so this is the third reader of it rather than a new format:
+    /// the sweeps go through [`DataStorage::update`] exactly as if a backend
+    /// had just produced them, which is what makes every downstream feature --
+    /// the waterfall, the peak holds, smoothing, the band plan, and saving the
+    /// result as PNG or TIFF -- work on a loaded file without knowing it came
+    /// from one.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn load_recording(&mut self, path: std::path::PathBuf) {
+        use std::io::BufReader;
+
+        // Loading replaces the axis and the history, which a live sweep is in
+        // the middle of writing to.
+        self.stop();
+
+        let file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(e) => {
+                let msg = format!("Could not open {}: {e}", path.display());
+                self.push_log(msg.clone());
+                self.error = Some(msg);
+                return;
+            }
+        };
+
+        let frames = crate::data::soapy_bin::read_frames(&mut BufReader::new(file));
+        if frames.is_empty() {
+            let msg = format!(
+                "No sweeps in {}. It has to be a soapy_power binary recording (.bin).",
+                path.display()
+            );
+            self.push_log(msg.clone());
+            self.error = Some(msg);
+            return;
+        }
+
+        // The recording's own cadence, so the time ruler down the side of a
+        // saved image reads in the units the capture was made at rather than
+        // in whatever the last live run happened to be doing.
+        let span = frames
+            .last()
+            .zip(frames.first())
+            .map(|(l, f)| l.timestamp - f.timestamp)
+            .unwrap_or(0.0);
+        let sweep_time = if frames.len() > 1 && span.is_finite() && span > 0.0 {
+            span / (frames.len() - 1) as f64
+        } else {
+            0.0
+        };
+
+        self.storage.reset();
+        self.spectrum.clear();
+        self.sweeps_seen = 0;
+        self.hops = 0;
+
+        let total = frames.len();
+        let mut rejected = 0usize;
+        for frame in frames {
+            if self.storage.update(frame).is_err() {
+                rejected += 1;
+            }
+        }
+        let shown = self.storage.history().len();
+        self.sweeps_seen = (total - rejected) as u64;
+        self.sweep_time = sweep_time;
+
+        // Nothing was uploaded row by row, so the textures are rebuilt from the
+        // whole ring in one go. A geometry of zero can never match the real
+        // one, which is what forces that path.
+        self.wf_geometry = (0, 0);
+        self.sync_waterfall(Updated {
+            recalculated: true,
+            ..Default::default()
+        });
+        if self.cfg.traces.persistence {
+            let length = self.cfg.persistence_length;
+            self.spectrum.refill_persistence(&mut self.storage, length);
+        }
+        self.spectrum.request_refit();
+        self.waterfall.reset_view();
+
+        self.cfg.record_file = path.display().to_string();
+        let mut note = format!("Loaded {total} sweeps from {}", path.display());
+        if shown < total - rejected {
+            // The ring is the display's, not the file's: saying so is what
+            // stops "I recorded an hour and only see ten minutes" being a bug
+            // report.
+            use std::fmt::Write as _;
+            let _ = write!(
+                note,
+                "; showing the newest {shown} (History size in Settings sets the limit)"
+            );
+        }
+        if rejected > 0 {
+            use std::fmt::Write as _;
+            let _ = write!(note, "; skipped {rejected} with a different bin count");
+        }
+        self.push_log(note);
+    }
+
     /// Put both views back where a fresh run would have them.
     fn reset_view(&mut self) {
         self.spectrum.request_refit();
@@ -628,23 +731,27 @@ impl SpectroScopeApp {
 
     /// Progress towards the next expected sweep.
     ///
-    /// Mirrors `update_progress()`: with no meaningful interval, or once the
-    /// sweep is overdue, the bar animates instead of showing a fraction,
-    /// because the remaining time is then unknown.
+    /// Scaled by how long a sweep is *measured* to take, not by the configured
+    /// interval. The interval is only a request for how long to dwell: every
+    /// hopping backend spends retuning and settling time on top of it, so an
+    /// `rtl_tcp` sweep of 34 hops runs several times the interval. Scaling the
+    /// bar by the interval therefore drove it past full within the first
+    /// second of every sweep, where the overdue branch pinned it at 1.0 with
+    /// the marching animation -- a bar that looked stuck because it was,
+    /// permanently, at the end.
+    ///
+    /// Until a second sweep has landed there is nothing measured to scale by,
+    /// and the animation is then the honest answer rather than a wrong number.
     fn progress_bar(&self) -> egui::ProgressBar {
         let elapsed = now_monotonic() - self.last_frame_at;
-        let interval = self.cfg.interval;
-
-        if interval < 1.0 || elapsed > interval + 1.0 {
-            egui::ProgressBar::new(1.0)
+        match sweep_progress(elapsed, self.sweep_time, self.cfg.interval) {
+            Some((fraction, remaining)) => egui::ProgressBar::new(fraction as f32)
+                .desired_width(250.0)
+                .text(format!("{remaining:.1} s")),
+            None => egui::ProgressBar::new(1.0)
                 .desired_width(250.0)
                 .animate(true)
-                .text("")
-        } else {
-            let fraction = (elapsed / interval).clamp(0.0, 1.0) as f32;
-            egui::ProgressBar::new(fraction)
-                .desired_width(250.0)
-                .text(format!("{:.1} s", (interval - elapsed).max(0.0)))
+                .text(""),
         }
     }
 
@@ -1125,6 +1232,27 @@ impl SpectroScopeApp {
             }
         }
 
+        if ui
+            .add_enabled(
+                !recording,
+                egui::Button::new("Load recording...").min_size(egui::vec2(0.0, 24.0)),
+            )
+            .on_hover_text(
+                "Open a .bin recording and show it here, so it can be examined, \
+                 smoothed and saved as a PNG or TIFF. This stops the acquisition \
+                 and replaces what is on screen.",
+            )
+            .clicked()
+        {
+            if let Some(p) = open_file_dialog(
+                "Load recorded sweeps",
+                &self.cfg.record_file,
+                &[("soapy_power binary", &["bin"])],
+            ) {
+                self.load_recording(std::path::PathBuf::from(p));
+            }
+        }
+
         match self.recorder.as_ref() {
             Some(rec) => {
                 ui.label(
@@ -1379,10 +1507,11 @@ impl eframe::App for SpectroScopeApp {
     }
 }
 
-/// `1.2 MB`, for the recording readout.
-#[cfg(not(target_arch = "wasm32"))]
 /// A tuner gain as the drop-down shows it, with the negative sentinel spelled
 /// out the way the Qt build spelled it.
+///
+/// Every target: the gain drop-down is in the side panel, which the browser
+/// build draws too.
 fn gain_label(db: f64) -> String {
     if db < 0.0 {
         "auto".to_owned()
@@ -1391,6 +1520,8 @@ fn gain_label(db: f64) -> String {
     }
 }
 
+/// `1.2 MB`, for the recording readout.
+#[cfg(not(target_arch = "wasm32"))]
 fn human_bytes(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["B", "kB", "MB", "GB"];
     let mut value = bytes as f64;
@@ -1403,6 +1534,32 @@ fn human_bytes(bytes: u64) -> String {
         format!("{bytes} B")
     } else {
         format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// Choose an existing file, starting wherever `current` points.
+///
+/// The counterpart to [`save_file_dialog`], and gated the same way; separate
+/// because `rfd` has no one call that both saves and opens, and because an open
+/// dialog must not pre-fill a file name that does not exist yet.
+#[cfg(not(target_arch = "wasm32"))]
+fn open_file_dialog(title: &str, current: &str, filters: &[(&str, &[&str])]) -> Option<String> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = (title, current, filters);
+        None
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let mut dialog = rfd::FileDialog::new().set_title(title);
+        for (name, exts) in filters {
+            dialog = dialog.add_filter(*name, exts);
+        }
+        let current = std::path::Path::new(current.trim());
+        if let Some(dir) = current.parent().filter(|d| d.is_dir()) {
+            dialog = dialog.set_directory(dir);
+        }
+        dialog.pick_file().map(|p| p.to_string_lossy().into_owned())
     }
 }
 
@@ -1456,6 +1613,33 @@ fn save_file_dialog(
 /// elapsed time by sweeps counted is immune to how they were delivered, and
 /// since changing the interval restarts the run there is no rate change to
 /// track within one.
+/// How far through the current sweep we are, and how much of it is left.
+///
+/// `None` means "no idea": either nothing has been measured yet, or the sweep
+/// is so overdue that a fraction would be a guess dressed up as a reading. The
+/// caller animates the bar in that case.
+///
+/// `sweep_time` wins over `interval` whenever one has been measured, which is
+/// the whole point. The interval is what the user asked each sweep to dwell
+/// for; a hopping backend then spends retuning and settling time on top of it,
+/// so the two are not the same quantity and scaling by the interval left the
+/// bar jammed at full for the whole of every sweep.
+fn sweep_progress(elapsed: f64, sweep_time: f64, interval: f64) -> Option<(f64, f64)> {
+    let expected = if sweep_time > 0.0 {
+        sweep_time
+    } else {
+        interval
+    };
+    if !expected.is_finite() || expected <= 0.0 || !elapsed.is_finite() {
+        return None;
+    }
+    if elapsed > expected * 2.0 {
+        return None;
+    }
+    let fraction = (elapsed / expected).clamp(0.0, 1.0);
+    Some((fraction, (expected - elapsed).max(0.0)))
+}
+
 fn average_sweep_time(now: f64, first_frame_at: f64, sweeps_seen: u64) -> f64 {
     if sweeps_seen < 2 {
         return 0.0;
@@ -1520,6 +1704,132 @@ pub fn window_title() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A recording written out and read back has to arrive on screen: the
+    /// spectrum, the history ring behind the waterfall, and therefore anything
+    /// saved as a PNG or TIFF from it.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_recording_loads_back_into_the_view() {
+        use crate::data::{RecordFormat, Recorder};
+        use std::sync::Arc;
+
+        let mut path = std::env::temp_dir();
+        path.push(format!("spectroscope-load-{}.bin", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let bins = 64usize;
+        let x: Arc<Vec<f64>> = Arc::new(
+            (0..bins)
+                .map(|i| 100e6 + i as f64 * 10e3)
+                .collect::<Vec<f64>>(),
+        );
+        let sweeps = 7usize;
+        {
+            let mut rec = Recorder::create(&path, RecordFormat::SoapyPowerBin)
+                .expect("a temp file can be created");
+            for s in 0..sweeps {
+                let y: Vec<f32> = (0..bins).map(|i| -90.0 + (i + s) as f32 * 0.25).collect();
+                rec.write(&crate::sources::Frame {
+                    timestamp: 1_700_000_000.0 + s as f64 * 0.5,
+                    x: Arc::clone(&x),
+                    y,
+                })
+                .expect("the write succeeds");
+            }
+            rec.finish().expect("the file closes");
+        }
+
+        let ctx = egui::Context::default();
+        let mut app = SpectroScopeApp::build(&ctx, Config::default(), None);
+        assert!(!app.storage.has_data(), "nothing is loaded yet");
+
+        app.load_recording(path.clone());
+
+        assert!(app.error.is_none(), "unexpected error: {:?}", app.error);
+        assert!(app.storage.has_data(), "the sweeps did not arrive");
+        assert_eq!(app.storage.bins(), bins);
+        assert_eq!(app.storage.history().len(), sweeps);
+        assert_eq!(app.sweeps_seen, sweeps as u64);
+        // The newest sweep is the one on the curve.
+        let last: Vec<f32> = (0..bins)
+            .map(|i| -90.0 + (i + sweeps - 1) as f32 * 0.25)
+            .collect();
+        assert_eq!(app.storage.y(), last.as_slice());
+        // Half a second between sweeps in the file, so the time ruler of a
+        // saved image reads the recording's own cadence.
+        assert!(
+            (app.sweep_time - 0.5).abs() < 1e-6,
+            "sweep time {}",
+            app.sweep_time
+        );
+        // And the axis survived, which is what the image's frequency ruler and
+        // the band plan are drawn against.
+        let axes = app.image_axes();
+        assert!((axes.start_hz - 100e6).abs() < 1.0, "{}", axes.start_hz);
+        assert!((axes.bin_hz - 10e3).abs() < 1.0, "{}", axes.bin_hz);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A file that is not a recording has to say so rather than quietly
+    /// blanking the window.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn loading_something_that_is_not_a_recording_reports_it() {
+        let mut path = std::env::temp_dir();
+        path.push(format!("spectroscope-notbin-{}.bin", std::process::id()));
+        std::fs::write(&path, b"this is not a sweep").expect("a temp file can be written");
+
+        let ctx = egui::Context::default();
+        let mut app = SpectroScopeApp::build(&ctx, Config::default(), None);
+        app.load_recording(path.clone());
+        assert!(app.error.is_some(), "a junk file loaded silently");
+        assert!(!app.storage.has_data());
+
+        let missing = path.with_file_name("spectroscope-does-not-exist.bin");
+        app.error = None;
+        app.load_recording(missing);
+        assert!(app.error.is_some(), "a missing file loaded silently");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The bug this pins down: an `rtl_tcp` sweep of 34 hops takes about 7.7 s
+    /// at the default 1 s interval, and the bar used to be scaled by the
+    /// interval -- so one second in it was already past full and stayed there,
+    /// marching, for the remaining six and a half.
+    #[test]
+    fn the_progress_bar_follows_the_measured_sweep_not_the_interval() {
+        let (fraction, remaining) = sweep_progress(3.85, 7.7, 1.0).expect("a real reading");
+        assert!((fraction - 0.5).abs() < 1e-9, "{fraction}");
+        assert!((remaining - 3.85).abs() < 1e-9, "{remaining}");
+
+        // Early in that same sweep the old code was already animating.
+        let (fraction, _) = sweep_progress(1.1, 7.7, 1.0).expect("a real reading");
+        assert!(fraction < 0.2, "{fraction}");
+
+        // A sweep is not late merely for running a second over.
+        assert!(sweep_progress(8.6, 7.7, 1.0).is_some());
+        // Far enough past it, the remaining time really is unknown.
+        assert!(sweep_progress(20.0, 7.7, 1.0).is_none());
+    }
+
+    /// Nothing measured yet, so the interval is all there is; and with neither,
+    /// the bar has to animate rather than divide by zero.
+    #[test]
+    fn progress_falls_back_to_the_interval_then_to_nothing() {
+        let (fraction, _) = sweep_progress(0.5, 0.0, 1.0).expect("the interval is usable");
+        assert!((fraction - 0.5).abs() < 1e-9, "{fraction}");
+
+        assert!(sweep_progress(0.5, 0.0, 0.0).is_none());
+        assert!(sweep_progress(0.5, 0.0, f64::NAN).is_none());
+        assert!(sweep_progress(f64::NAN, 2.0, 1.0).is_none());
+
+        // Free-running (interval 0) is fine once a sweep has been timed, which
+        // the old `interval < 1.0` test could never reach.
+        assert!(sweep_progress(0.1, 0.25, 0.0).is_some());
+    }
 
     /// The negative sentinel has to read as "auto" wherever it is shown, or the
     /// drop-down would offer a nonsensical "-1.0 dB".
