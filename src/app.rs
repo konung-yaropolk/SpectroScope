@@ -1369,7 +1369,20 @@ impl SpectroScopeApp {
         }
     }
 
+    /// First and last bin centre of the current sweep, once there is one.
+    fn data_x(&self) -> Option<(f64, f64)> {
+        match self.storage.x() {
+            Some(x) if x.len() > 1 => Some((x[0], x[x.len() - 1])),
+            _ => None,
+        }
+    }
+
     fn central(&mut self, ctx: &egui::Context) {
+        // Before the plot runs, so this frame's drag and zoom are measured
+        // against the sweep that is actually on screen.
+        let limit = self.data_x();
+        self.spectrum.set_limit_x(limit);
+
         egui::CentralPanel::default().show(ctx, |ui| {
             let total = ui.available_height();
             if !self.cfg.show_waterfall {
@@ -1404,10 +1417,7 @@ impl SpectroScopeApp {
             ui.painter()
                 .rect_filled(rect.shrink2(egui::vec2(0.0, 2.5)), 1.0, color);
 
-            let data_x = match self.storage.x() {
-                Some(x) if x.len() > 1 => (x[0], x[x.len() - 1]),
-                _ => (0.0, 1.0),
-            };
+            let data_x = limit.unwrap_or((0.0, 1.0));
             let view_x = if self.spectrum.view_x.1 > self.spectrum.view_x.0 {
                 self.spectrum.view_x
             } else {
@@ -2090,6 +2100,193 @@ mod tests {
                     "asked for {width}, recording claimed {got}"
                 );
             }
+        }
+    }
+
+    /// Neither view can be zoomed or dragged off the sweep.
+    ///
+    /// Driven through the real `App::update`, because the clamp has to survive
+    /// the round trip: the request goes to the plot, egui_plot applies it, the
+    /// waterfall then takes whatever the plot drew. A clamp that only held in
+    /// the setter would be undone by the first frame.
+    #[test]
+    fn the_view_cannot_leave_the_sweep() {
+        use eframe::App as _;
+
+        let ctx = egui::Context::default();
+        let mut app = SpectroScopeApp::build(&ctx, Config::default(), None);
+        let mut frame = eframe::Frame::_new_kittest();
+
+        let bins = 512usize;
+        let x: Vec<f64> = (0..bins).map(|i| 87.0e6 + i as f64 * 1.0e4).collect();
+        let (lo, hi) = (x[0], x[bins - 1]);
+        app.storage
+            .update(Frame {
+                timestamp: 1.0,
+                x: std::sync::Arc::new(x.clone()),
+                y: vec![-90.0; bins],
+            })
+            .expect("the first sweep sets the bin count");
+
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1000.0, 700.0),
+            )),
+            ..Default::default()
+        };
+        let mut draw = |app: &mut SpectroScopeApp| {
+            let _ = ctx.run(input.clone(), |ctx| app.update(ctx, &mut frame));
+        };
+        for _ in 0..3 {
+            draw(&mut app);
+        }
+
+        let span = hi - lo;
+        for (name, asked) in [
+            ("zoomed far out", (lo - 10.0 * span, hi + 10.0 * span)),
+            ("panned off the left", (lo - span, lo - span * 0.5)),
+            ("panned off the right", (hi + span * 0.5, hi + span)),
+            ("a hair too wide", (lo - 1.0, hi + 1.0)),
+        ] {
+            app.spectrum.set_view_x(asked.0, asked.1);
+            // ONE frame, deliberately. A request that arrives already clamped
+            // is in range the moment it is applied; one clamped only
+            // afterwards shows a frame of the sweep sliding off the pane
+            // before it snaps back. Two frames here would pass either way,
+            // and the overshoot would go unnoticed.
+            draw(&mut app);
+            let (vx0, vx1) = app.spectrum.view_x;
+            // A pixel of slack: egui_plot rounds bounds to the pane.
+            let slack = span * 1e-6;
+            assert!(
+                vx0 >= lo - slack && vx1 <= hi + slack && vx1 > vx0,
+                "{name}: asked for {asked:?}, got {vx0}..{vx1}, sweep is {lo}..{hi}"
+            );
+        }
+
+        // And the limit is reachable, not merely approached: asking for far
+        // too much should land on exactly the whole sweep, which is what
+        // *Reset view* gives and what "it fits" means.
+        app.spectrum
+            .set_view_x(lo - 100.0 * span, hi + 100.0 * span);
+        draw(&mut app);
+        let (vx0, vx1) = app.spectrum.view_x;
+        let slack = span * 1e-6;
+        assert!(
+            (vx0 - lo).abs() < slack && (vx1 - hi).abs() < slack,
+            "zooming out should settle on the whole sweep, got {vx0}..{vx1}"
+        );
+    }
+
+    /// Dragging the plot itself cannot pull the sweep off the pane either.
+    ///
+    /// The test above drives the clamp through `set_view_x`, which is the path
+    /// the waterfall takes. This one drives egui_plot's *own* pan, which is a
+    /// different path with a different hazard: egui_plot applies the drag to
+    /// its bounds before any `set_plot_bounds` from the closure can be seen,
+    /// so the clamp has to work as a correction after the fact. Nothing else
+    /// here would notice if that correction stopped happening.
+    #[test]
+    fn dragging_the_plot_cannot_pull_the_sweep_off_the_pane() {
+        use eframe::App as _;
+
+        let ctx = egui::Context::default();
+        let mut app = SpectroScopeApp::build(&ctx, Config::default(), None);
+        let mut frame = eframe::Frame::_new_kittest();
+
+        let bins = 512usize;
+        let x: Vec<f64> = (0..bins).map(|i| 87.0e6 + i as f64 * 1.0e4).collect();
+        let (lo, hi) = (x[0], x[bins - 1]);
+        app.storage
+            .update(Frame {
+                timestamp: 1.0,
+                x: std::sync::Arc::new(x.clone()),
+                y: vec![-90.0; bins],
+            })
+            .expect("the first sweep sets the bin count");
+
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0));
+        let mut draw = |app: &mut SpectroScopeApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| app.update(ctx, &mut frame));
+        };
+
+        for _ in 0..3 {
+            draw(&mut app, Vec::new());
+        }
+
+        // Zoomed in, so there is somewhere to pan *to*. At full fit the view
+        // is already pinned and a drag proves nothing.
+        let span = (hi - lo) / 4.0;
+        let middle = (lo + hi) / 2.0;
+        app.spectrum
+            .set_view_x(middle - span / 2.0, middle + span / 2.0);
+        for _ in 0..2 {
+            draw(&mut app, Vec::new());
+        }
+        let before = app.spectrum.view_x;
+        assert!(
+            (before.1 - before.0 - span).abs() < span * 0.01,
+            "setup failed: wanted a {span} wide view, got {before:?}"
+        );
+
+        let plot = app.spectrum.plot_rect.expect("the plot reports its rect");
+        let y = plot.center().y;
+
+        // Drag right, well past the left edge of the sweep, then left, well
+        // past the right edge. Each drag is several moves because egui only
+        // calls it a drag once the pointer has travelled.
+        for direction in [1.0f32, -1.0] {
+            for _ in 0..6 {
+                let from = plot.center().x - direction * plot.width() * 0.35;
+                let to = plot.center().x + direction * plot.width() * 0.35;
+                draw(
+                    &mut app,
+                    vec![
+                        egui::Event::PointerMoved(egui::pos2(from, y)),
+                        egui::Event::PointerButton {
+                            pos: egui::pos2(from, y),
+                            button: egui::PointerButton::Primary,
+                            pressed: true,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+                for step in 1..=4 {
+                    let at = from + (to - from) * step as f32 / 4.0;
+                    draw(&mut app, vec![egui::Event::PointerMoved(egui::pos2(at, y))]);
+                }
+                draw(
+                    &mut app,
+                    vec![egui::Event::PointerButton {
+                        pos: egui::pos2(to, y),
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                );
+            }
+
+            // One more frame for the correction to land, then it must be
+            // inside -- and still the width it was, because a pan is not a
+            // zoom.
+            draw(&mut app, Vec::new());
+            let (vx0, vx1) = app.spectrum.view_x;
+            let slack = (hi - lo) * 1e-6;
+            assert!(
+                vx0 >= lo - slack && vx1 <= hi + slack,
+                "dragging {} left the sweep: {vx0}..{vx1} is outside {lo}..{hi}",
+                if direction > 0.0 { "right" } else { "left" }
+            );
+            assert!(
+                (vx1 - vx0 - span).abs() < span * 0.05,
+                "the drag changed the zoom: {vx0}..{vx1} is not {span} wide"
+            );
         }
     }
 

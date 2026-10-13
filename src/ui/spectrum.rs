@@ -67,6 +67,11 @@ pub struct SpectrumPlot {
     pub plot_rect: Option<egui::Rect>,
     /// An x range requested from outside, e.g. by zooming the waterfall.
     pending_x: Option<(f64, f64)>,
+    /// The sweep the view must stay inside, once there is one.
+    ///
+    /// `None` until data arrives, which is also what a plot with nothing in it
+    /// wants: there is no range to be outside of.
+    limit_x: Option<(f64, f64)>,
     /// Axis ranges to install on the next frame, computed from the full sweep.
     ///
     /// `set_auto_bounds` alone cannot do this job: decimation clips the cached
@@ -108,7 +113,24 @@ impl SpectrumPlot {
     /// Adopt an x range chosen elsewhere, keeping the current y range.
     pub fn set_view_x(&mut self, x0: f64, x1: f64) {
         if x1 > x0 && x0.is_finite() && x1.is_finite() {
-            self.pending_x = Some((x0, x1));
+            self.pending_x = Some(self.clamped((x0, x1)));
+        }
+    }
+
+    /// The range the view may not leave: the span of the current sweep.
+    ///
+    /// Set every frame from the data, because it changes whenever the start,
+    /// stop or bin size does -- and when it does, the old window is pulled
+    /// into the new sweep rather than left pointing at frequencies that are no
+    /// longer being measured.
+    pub fn set_limit_x(&mut self, limit: Option<(f64, f64)>) {
+        self.limit_x = limit;
+    }
+
+    fn clamped(&self, view: (f64, f64)) -> (f64, f64) {
+        match self.limit_x {
+            Some(limit) => super::clamp_view_x(view, limit),
+            None => view,
         }
     }
 
@@ -382,6 +404,21 @@ impl SpectrumPlot {
         let (vx0, vx1) = (bounds.min()[0], bounds.max()[0]);
         self.view_x = (vx0, vx1);
         self.plot_rect = Some(*response.transform.frame());
+
+        // Pull the view back inside the sweep if this frame's drag or zoom
+        // took it out. It has to be a correction rather than a prevention:
+        // egui_plot applies the pointer's own drag and zoom to the bounds
+        // *before* it applies any `set_plot_bounds` from the closure, and the
+        // closure cannot see the result, so there is no way to clamp the
+        // interaction as it happens. Reported as drawn and corrected on the
+        // next frame, which keeps the waterfall on exactly the range the plot
+        // drew -- one frame of overshoot in both beats a frame of the two
+        // disagreeing.
+        let (cx0, cx1) = self.clamped((vx0, vx1));
+        let slack = (vx1 - vx0).abs() * 1e-9;
+        if (cx0 - vx0).abs() > slack || (cx1 - vx1).abs() > slack {
+            self.pending_x = Some((cx0, cx1));
+        }
 
         let width = response.response.rect.width().max(1.0);
         // Re-decimate when the view moved by more than a pixel's worth, or the
