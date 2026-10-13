@@ -29,12 +29,13 @@ const MAX_FRAMES_PER_REPAINT: usize = 8;
 /// Share of the window the controls panel takes on a first run.
 const PANEL_WIDTH_FRACTION: f32 = 0.20;
 
-/// What the browser is offered when no name has been typed.
+/// Where the waterfall goes when nothing has been typed or picked.
 ///
-/// A name rather than a path: in a tab the user does not choose where it
-/// lands, only what it is called, and `.png` is the half of the pair somebody
-/// looking at a picture wants.
-#[cfg(target_arch = "wasm32")]
+/// A bare name rather than a path, because the three platforms disagree about
+/// what a path even is here: a tab chooses only what the download is called,
+/// Android has no chooser at all, and on the desktop a bare name lands beside
+/// the process. `.png` because it is the half of the pair somebody who just
+/// wants a picture is after.
 const DEFAULT_IMAGE_NAME: &str = "spectroscope-waterfall.png";
 
 /// Narrowest the controls panel may be dragged, in points.
@@ -271,6 +272,14 @@ impl SpectroScopeApp {
             typed.to_owned()
         };
         let format = ImageFormat::from_path(std::path::Path::new(&name));
+        // `from_path` falls back to PNG for a name with no extension, so a
+        // typed "waterfall" would be offered to the browser as an extensionless
+        // file that nothing on the far side knows how to open. Give it the one
+        // the container actually is.
+        let name = match std::path::Path::new(&name).extension() {
+            Some(_) => name,
+            None => format!("{name}.{}", format.extension()),
+        };
 
         let axes = self.image_axes();
         let encoded = image_export::encode(
@@ -1277,23 +1286,57 @@ impl SpectroScopeApp {
 
         ui.separator();
 
+        // The same shape as the File row above: somewhere to type, and a
+        // browse button beside it. Not only for symmetry -- Android is a
+        // native target with no file chooser at all, because `rfd` has no
+        // backend there and `save_file_dialog` returns `None` unconditionally.
+        // Without a field to fall back on, the button below could only ever do
+        // nothing, silently, which is what it used to do.
+        ui.horizontal(|ui| {
+            ui.label("Image:");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // No chooser on Android, so no button that opens one. The
+                // short-circuit means the widget is not added at all rather
+                // than added and dead.
+                if !cfg!(target_os = "android") && ui.button("...").clicked() {
+                    if let Some(p) = save_file_dialog(
+                        "Save waterfall image",
+                        &self.cfg.waterfall_image_file,
+                        &[("PNG image", &["png"]), ("TIFF image", &["tif", "tiff"])],
+                        "png",
+                    ) {
+                        self.cfg.waterfall_image_file = p;
+                    }
+                }
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.cfg.waterfall_image_file)
+                        .hint_text(DEFAULT_IMAGE_NAME)
+                        .desired_width(ui.available_width().max(24.0)),
+                );
+            });
+        })
+        .response
+        .on_hover_text(
+            "The extension picks the container: .png for a picture with the \
+             ruler drawn on, .tif for the raw 32-bit values ImageJ measures.",
+        );
+
         let have_history = !self.storage.history().is_empty();
         if ui
             .add_enabled(
                 have_history,
-                egui::Button::new("Save waterfall...").min_size(egui::vec2(0.0, 24.0)),
+                egui::Button::new("Save waterfall").min_size(egui::vec2(0.0, 24.0)),
             )
             .on_hover_text("Write the stored history as a PNG or TIFF, one pixel per bin")
             .clicked()
         {
-            if let Some(p) = save_file_dialog(
-                "Save waterfall image",
-                &self.cfg.waterfall_image_file,
-                &[("PNG image", &["png"]), ("TIFF image", &["tif", "tiff"])],
-                "png",
-            ) {
-                self.save_waterfall(std::path::PathBuf::from(p));
-            }
+            let typed = self.cfg.waterfall_image_file.trim();
+            let path = if typed.is_empty() {
+                DEFAULT_IMAGE_NAME.to_owned()
+            } else {
+                typed.to_owned()
+            };
+            self.save_waterfall(std::path::PathBuf::from(path));
         }
         ui.checkbox(&mut self.cfg.annotate_tiff, "Label the TIFF too")
             .on_hover_text(

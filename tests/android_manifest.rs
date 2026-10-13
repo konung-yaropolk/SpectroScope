@@ -102,9 +102,9 @@ fn has(filter: &Value, key: &str, want: &str) -> bool {
 
 /// The launcher icon has to exist on disk, in the buckets aapt2 reads.
 ///
-/// `aapt2 compile --dir` is given the whole tree, and a missing file is not an
-/// error there -- it is an `@mipmap/ic_launcher` that resolves to nothing at
-/// link time, which fails the build late and cryptically.
+/// `aapt2 compile --dir` is handed the whole tree and a missing file is not an
+/// error there -- it becomes an `@mipmap/ic_launcher` that resolves to nothing
+/// at link time, which fails late and cryptically.
 #[test]
 fn the_launcher_icon_is_where_the_manifest_says() {
     let m = manifest();
@@ -122,19 +122,79 @@ fn the_launcher_icon_is_where_the_manifest_says() {
     let root = repo().join(res);
     assert!(root.is_dir(), "{} is not a directory", root.display());
 
-    // Every bucket a current Android device may ask for. Leaving one out is
-    // not fatal -- Android rescales a neighbour -- but it is always a mistake
-    // rather than a decision, so all five are required.
-    for bucket in ["mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi"] {
-        let p: &Path = &root
-            .join(format!("mipmap-{bucket}"))
-            .join(format!("{name}.png"));
-        assert!(p.is_file(), "missing {}", p.display());
-        let bytes = std::fs::metadata(p).expect("stat").len();
-        assert!(
-            bytes > 256,
-            "{} is suspiciously small ({bytes} bytes)",
-            p.display()
+    // Every bucket a current device may ask for, at the size that bucket
+    // means. Leaving one out is not fatal -- Android rescales a neighbour --
+    // but it is always a mistake rather than a decision.
+    //
+    // 48dp for the legacy bitmap, 108dp for the adaptive foreground: the
+    // second is fixed by the platform, and getting it wrong is the difference
+    // between an icon that fills its mask and one that floats inside it.
+    for (bucket, scale) in [
+        ("mdpi", 1.0),
+        ("hdpi", 1.5),
+        ("xhdpi", 2.0),
+        ("xxhdpi", 3.0),
+        ("xxxhdpi", 4.0),
+    ] {
+        let dir = root.join(format!("mipmap-{bucket}"));
+        png_is(&dir.join(format!("{name}.png")), (48.0 * scale) as u32);
+        png_is(
+            &dir.join(format!("{name}_foreground.png")),
+            (108.0 * scale) as u32,
         );
     }
+
+    // The adaptive icon itself. Without it, every device that can install the
+    // APK -- min_sdk is 26, so all of them -- applies "legacy treatment" to
+    // the bitmap above: shrink it and composite it onto a generated white
+    // plate, which for a full-bleed tile looks like a badge in a blob and is
+    // a fair description of "there is no icon".
+    let adaptive = root.join("mipmap-anydpi-v26").join(format!("{name}.xml"));
+    let xml = std::fs::read_to_string(&adaptive)
+        .unwrap_or_else(|e| panic!("{}: {e}", adaptive.display()));
+    for needle in [
+        "<adaptive-icon",
+        "@color/ic_launcher_background",
+        &format!("@mipmap/{name}_foreground"),
+    ] {
+        assert!(
+            xml.contains(needle),
+            "{} has no {needle}",
+            adaptive.display()
+        );
+    }
+
+    let colours = root.join("values").join("ic_launcher_background.xml");
+    let text =
+        std::fs::read_to_string(&colours).unwrap_or_else(|e| panic!("{}: {e}", colours.display()));
+    assert!(
+        text.contains("name=\"ic_launcher_background\""),
+        "{} does not define the colour the adaptive icon references",
+        colours.display()
+    );
+}
+
+/// Assert `path` is a real PNG of exactly `size` square.
+///
+/// Reading the header rather than the file length, because "larger than a few
+/// hundred bytes" passes for a truncated file, a JPEG renamed, or an icon
+/// dropped into the wrong bucket -- and each of those fails inside `aapt2`
+/// during a release instead of here.
+fn png_is(path: &Path, size: u32) {
+    let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    assert!(
+        bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]),
+        "{} is not a PNG",
+        path.display()
+    );
+    // IHDR is always the first chunk: 8 signature + 4 length + 4 type, then
+    // width and height as big-endian u32.
+    let at = |o: usize| u32::from_be_bytes(bytes[o..o + 4].try_into().unwrap());
+    let (w, h) = (at(16), at(20));
+    assert_eq!(
+        (w, h),
+        (size, size),
+        "{} is {w}x{h}, expected {size}x{size}",
+        path.display()
+    );
 }

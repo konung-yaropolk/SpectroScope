@@ -55,10 +55,15 @@ pub mod web {
     /// what name, is then between the browser and its user -- `name` is only
     /// a suggestion.
     ///
-    /// The object URL is revoked immediately afterwards. That is safe because
-    /// the click has already handed the browser its own reference to the Blob,
-    /// and skipping it would pin every exported image in memory for the life
-    /// of the page -- which, for a full waterfall, is tens of megabytes each.
+    /// The object URL is revoked a moment later rather than immediately.
+    /// Skipping the revoke would pin every exported image in memory for the
+    /// life of the page -- tens of megabytes each for a full waterfall -- but
+    /// doing it in the same synchronous turn as the click is not safe either:
+    /// `click()` dispatches synchronously while the download is a queued task,
+    /// and the blob URL is resolved when that task creates its request. Chrome
+    /// and Firefox happen to resolve early enough; WebKit has historically
+    /// cancelled the download. One turn of the event loop costs nothing and
+    /// removes the question.
     pub fn download(name: &str, mime: &str, bytes: &[u8]) -> Result<(), String> {
         let document = web_sys::window()
             .and_then(|w| w.document())
@@ -86,7 +91,17 @@ pub mod web {
         anchor.set_download(name);
         anchor.click();
 
-        let _ = web_sys::Url::revoke_object_url(&url);
+        let revoke = Closure::once_into_js(move || {
+            let _ = web_sys::Url::revoke_object_url(&url);
+        });
+        if let Some(window) = web_sys::window() {
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                revoke.unchecked_ref(),
+                // Long enough for the queued download task to have run, short
+                // enough that nothing noticeable is held.
+                1_000,
+            );
+        }
         Ok(())
     }
 

@@ -171,15 +171,25 @@ jobs:
       # Here rather than next to the other wasm steps on Windows, because
       # wasm-pack downloads a different Binaryen asset per host and only the
       # same OS, the same pinned wasm-pack and the same command make a guard.
-      - uses: jetli/wasm-pack-action@v0.4.0
+      # `taiki-e/install-action`, not `jetli/wasm-pack-action`. The latter is a
+      # JavaScript action still declaring `using: node16` on both v0.4.0 and
+      # master, and v0.4.0 is the newest tag that exists -- so Dependabot can
+      # never move it off a Node runtime GitHub removed from the runners in
+      # November 2024 and keeps alive only through a shim. install-action is a
+      # *composite* action: it runs shell, so there is no Node runtime to
+      # deprecate, and it fetches the pinned wasm-pack release binary.
+      #
+      # The version pin is the part that matters and it has not changed. With
+      # `latest`, the old action resolved the version through an
+      # unauthenticated GitHub API call and fell back to wasm-pack v0.9.1 when
+      # that call was rate limited -- which fetches Binaryen 90, which cannot
+      # represent a module with more than one table, which is what wasm-bindgen
+      # has emitted ever since rustc turned reference-types on for wasm32. The
+      # symptom was a deploy breaking with no commit behind it, intermittently.
+      - uses: taiki-e/install-action@v2
         with:
-          # Pinned, never `latest`: with `latest` the action resolves the
-          # version through an unauthenticated GitHub API call and silently
-          # falls back to wasm-pack v0.9.1 (from 2020) when that call is rate
-          # limited — which fetches Binaryen 90, which cannot represent a module
-          # with more than one table and so cannot parse anything wasm-bindgen
-          # emits today. A deploy that breaks with no commit behind it.
-          version: v0.15.0
+          tool: wasm-pack@0.15.0
+
       - name: Build the web bundle the way the deploy does
         run: wasm-pack build --target web --out-dir pkg --release
 

@@ -194,8 +194,13 @@ jobs:
 
       # Output: target/generate-rpm/spectroscope-<version>-1.<arch>.rpm, with
       # the arch read from the binary so the two runners cannot collide.
+      # `--auto-req builtin` on the command line, not only in Cargo.toml:
+      # cargo-generate-rpm honours just "no"/"disabled" from the manifest and
+      # takes the mode from this flag, whose default would shell out to
+      # find-requires. The Ubuntu runner has not got one, so the builtin
+      # scanner was being used by luck rather than by instruction.
       - name: Build .rpm
-        run: cargo generate-rpm
+        run: cargo generate-rpm --auto-req builtin
 
       - name: Stage stable-named .rpm
         run: cp target/generate-rpm/*.rpm "SpectroScope-${{ matrix.arch }}.rpm"
@@ -303,10 +308,19 @@ jobs:
 
       # Vendor every crate from Cargo.lock into generated-sources.json (the
       # offline sources the manifest pulls in), next to the manifest.
+      # Pinned to a commit, not `master`, and `-f` so a moved file is a
+      # download error rather than an HTML error page handed to python3 as a
+      # script. Every other tool this workflow uses is pinned exactly --
+      # cargo-apk2@1.4.2, wasm-pack 0.15.0, build-tools;35.0.0, runtime
+      # 25.08 -- and this was the one exception, i.e. the one thing that could
+      # break the .flatpak asset with no commit in this repository behind it.
       - name: Generate offline cargo sources
+        env:
+          GENERATOR_REF: 41c20aa10819cdb2a4f3ca171758a96d1955c018
         run: |
-          curl -sSL -o flatpak-cargo-generator.py \
-            https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py
+          set -euo pipefail
+          curl -fsSL -o flatpak-cargo-generator.py \
+            "https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/$GENERATOR_REF/cargo/flatpak-cargo-generator.py"
           python3 flatpak-cargo-generator.py Cargo.lock \
             -o packaging/flatpak/generated-sources.json
 
@@ -380,9 +394,14 @@ jobs:
           # kernel name aarch64 — map it just for these download URLs.
           dl_arch="${{ matrix.arch }}"
           [ "$dl_arch" = arm64 ] && dl_arch=aarch64
-          curl -sSL -o linuxdeploy \
+          # `-f`, so an HTTP 404 is a download failure rather than an
+          # error page written into the file, chmod +x'd, and run -- which
+          # fails with "cannot execute binary file" and points nowhere near
+          # the problem. These are `continuous` tags on somebody else's
+          # repository, so they are exactly the URLs that move.
+          curl -fsSL -o linuxdeploy \
             "$base/linuxdeploy/releases/download/continuous/linuxdeploy-${dl_arch}.AppImage"
-          curl -sSL -o linuxdeploy-plugin-appimage \
+          curl -fsSL -o linuxdeploy-plugin-appimage \
             "$base/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-${dl_arch}.AppImage"
           chmod +x linuxdeploy linuxdeploy-plugin-appimage
           export PATH="$PWD:$PATH"   # so linuxdeploy finds the plugin
@@ -604,15 +623,38 @@ jobs:
       # everyone else at install time; an unsigned APK installs nowhere at all.
       # Neither shows up in the build log, so both are asserted rather than
       # printed -- the same reasoning as the lipo slice check in the macOS job.
-      - name: Check the APK is signed and carries both ABIs
+      - name: Check the APK is signed and carries both ABIs and the icon
         run: |
           set -euo pipefail
           APK=target/release/apk/SpectroScope.apk
           ls -l "$APK"
+          # Listed once into a variable rather than piped into `grep -q` per
+          # check. `grep -q` exits on its first match and closes the pipe,
+          # `unzip` then takes SIGPIPE and exits 141, and `pipefail` turns a
+          # successful *find* into a failed pipeline. It does not fire while
+          # the listing fits the pipe buffer, which is the worst way for a
+          # release check to be wrong.
+          listing="$(unzip -l "$APK")"
+          want() {
+            case "$listing" in
+              *"$1"*) ;;
+              *) echo "::error::the APK contains no $2 ($1)"; exit 1 ;;
+            esac
+          }
           for abi in arm64-v8a armeabi-v7a; do
-            unzip -l "$APK" | grep -q "lib/$abi/libspectroscope.so" \
-              || { echo "::error::the APK has no $abi slice"; exit 1; }
+            want "lib/$abi/libspectroscope.so" "$abi slice"
           done
+          # The manifest check above proves an android:icon attribute was
+          # linked; this proves the bitmap it points at is in the package.
+          # After aapt2 link the attribute is a resource id, so it would still
+          # look fine with the drawable missing -- and "no icon in the APK" is
+          # the complaint this release exists to answer.
+          want "res/" "resource directory"
+          want "resources.arsc" "resource table"
+          case "$listing" in
+            *ic_launcher*) ;;
+            *) echo "::error::the APK carries no launcher icon resource"; exit 1 ;;
+          esac
           bt="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
           "$bt/apksigner" verify --print-certs "$APK"
 
@@ -761,7 +803,22 @@ jobs:
 
           PLIST="$APP/Contents/Info.plist"
           /usr/libexec/PlistBuddy -c "Clear dict" "$PLIST" 2>/dev/null || true
-          add() { /usr/libexec/PlistBuddy -c "Add $1 $2 ${3:-}" "$PLIST"; }
+          # PlistBuddy parses the -c string itself, so a value containing a
+          # space has to be quoted *inside* it; unquoted, the value ends at
+          # the space and the rest becomes stray arguments, which would ship
+          # CFBundleGetInfoString as "Spectrum". `plutil -lint` cannot catch
+          # that -- a truncated string is still a valid plist -- so the two
+          # multi-word values are read back below instead.
+          #
+          # Only the multi-word ones are quoted. Every other value here is a
+          # single token that already worked, and `bool 'true'` is not worth
+          # finding out about on a release runner.
+          add() {
+            case "${3:-}" in
+              *" "*) /usr/libexec/PlistBuddy -c "Add $1 $2 '$3'" "$PLIST" ;;
+              *)     /usr/libexec/PlistBuddy -c "Add $1 $2 ${3:-}" "$PLIST" ;;
+            esac
+          }
           add ":CFBundleName"                  string  "$PRODUCT_NAME"
           add ":CFBundleDisplayName"           string  "$PRODUCT_NAME"
           add ":CFBundleExecutable"            string  "SpectroScope"
@@ -777,6 +834,14 @@ jobs:
           add ":NSHighResolutionCapable"       bool    true
 
           plutil -lint "$PLIST"
+          # Read back the two values that contain spaces, and insist they came
+          # through whole. This is the assertion `plutil` cannot make.
+          for key in CFBundleGetInfoString NSHumanReadableCopyright; do
+            got="$(/usr/libexec/PlistBuddy -c "Print :$key" "$PLIST")"
+            echo "$key = $got"
+          done
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleGetInfoString' "$PLIST")" = "$DESCRIPTION" ] \
+            || { echo "::error::CFBundleGetInfoString was truncated"; exit 1; }
 
       # Ad-hoc code-sign so the app launches on the build arch without an
       # "is damaged" Gatekeeper error from a totally unsigned bundle. This is

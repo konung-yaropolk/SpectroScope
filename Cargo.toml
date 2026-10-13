@@ -62,7 +62,11 @@ crossbeam-channel = "0.5"
 # uses); eframe already pulls the crate in, so enabling one feature is free.
 # `fast-tiff-lib` writes the 32-bit float ImageJ TIFF -- `default-features =
 # false` drops its memory map, which only a reader wants, and the ZSTD codec,
-# whose C dependency is not worth it for a Deflate-compressed file.
+# whose C dependency is not worth it for a Deflate-compressed file. It does
+# NOT drop rayon, which that crate depends on unconditionally, so the wasm
+# bundle carries a thread pool it never enters (fast-tiff-lib's own
+# `should_parallelize` is false on wasm32). Dead weight rather than a hazard,
+# but worth knowing before trusting this line to keep the bundle lean.
 image = { version = "0.25", default-features = false, features = ["png"] }
 fast-tiff-lib = { version = "0.21", default-features = false }
 log = "0.4"
@@ -269,6 +273,11 @@ recommends = "libvulkan1, mesa-vulkan-drivers, libwayland-client0"
 # the whole SoapySDR stack would be charging every user for a backend most of
 # them will not pick.
 suggests = "soapysdr-tools, rtl-sdr, hackrf"
+# Ship the GPL text, not just the SPDX identifier. cargo-deb appends the file
+# to the generated copyright, which is both what lintian wants and what the
+# licence itself requires of a binary distribution. The Arch package already
+# installs it; this is the .deb catching up.
+license-file = ["LICENSE", "0"]
 # Listing assets disables cargo-deb's automatic binary inclusion, so the binary
 # is listed here too. The .desktop entry and the hicolor icons give the app a
 # menu launcher; dpkg refreshes the icon and desktop caches on install.
@@ -295,10 +304,16 @@ assets = [
 # Output: target/generate-rpm/spectroscope-<version>-1.<arch>.rpm, with the arch
 # read from the binary so the two runners in the matrix cannot collide.
 [package.metadata.generate-rpm]
-# `builtin`: scan the ELF's NEEDED sonames and emit `libfoo.so.N()(64bit)`
-# Requires, which every RPM distro resolves through its own package Provides --
-# more portable than hard-coding Fedora vs openSUSE package names, and it works
-# on a non-RPM build host where the usual find-requires helper is absent.
+# `builtin` resolves the binary's library dependencies without rpmbuild's
+# find-requires helper, which a non-RPM build host has not got. It emits
+# `libfoo.so.N()(64bit)` Requires that every RPM distro satisfies through its
+# own package Provides -- more portable than hard-coding Fedora vs openSUSE
+# package names.
+#
+# This key alone does not select the mode: cargo-generate-rpm honours only
+# "no"/"disabled" from the manifest and otherwise takes the mode from
+# `--auto-req`, which the release job passes explicitly. Keeping it here
+# documents the intent for anyone running the command by hand.
 #
 # Deliberately *not* mirroring the .deb's hand-written depends list: those are
 # dlopened libraries, and an RPM Requires naming them would have to carry the
@@ -316,6 +331,8 @@ assets = [
     { source = "icon/icon128.png", dest = "/usr/share/icons/hicolor/128x128/apps/spectroscope.png", mode = "644" },
     { source = "icon/icon256.png", dest = "/usr/share/icons/hicolor/256x256/apps/spectroscope.png", mode = "644" },
     { source = "README.md", dest = "/usr/share/doc/spectroscope/README.md", mode = "644" },
+    # The GPL text, for the same reason the .deb and the PKGBUILD carry it.
+    { source = "LICENSE", dest = "/usr/share/licenses/spectroscope/LICENSE", mode = "644", doc = true },
 ]
 
 # ---------------------------------------------------------------------------
@@ -360,9 +377,10 @@ theme = "@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
 # with no children but two stray elements. (The original rust-mobile/cargo-apk
 # synthesised a default activity; this fork does not.)
 #
-# `the_android_manifest_can_be_launched` in src/lib.rs is what keeps this block
-# from being deleted or renamed by accident, and the release workflow decodes
-# the built APK's manifest and fails if the launcher wiring is not in it.
+# `the_android_manifest_can_be_launched` in tests/android_manifest.rs is what
+# keeps this block from being deleted or renamed by accident, and the release
+# workflow decodes the built APK's manifest and fails if the launcher wiring
+# is not in it.
 [[package.metadata.android.application.activity]]
 # The stock NativeActivity: the Rust side is an `ANativeActivity_onCreate`
 # export in the cdylib (from `android-activity`), so there is no Java subclass
@@ -371,7 +389,7 @@ name = "android.app.NativeActivity"
 # Handle these in-process instead of being destroyed and recreated. A recreate
 # would drop the GPU ring buffer the whole waterfall history lives in, so a
 # rotation would wipe the display.
-config_changes = "orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|screenLayout|density|uiMode|navigation"
+config_changes = "orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|screenLayout|density|uiMode|navigation|locale|layoutDirection|fontScale|colorMode"
 # Re-tapping the launcher icon returns to the running sweep rather than
 # stacking a second copy of an application that owns a radio.
 launch_mode = "singleTop"

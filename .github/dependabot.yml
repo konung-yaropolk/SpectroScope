@@ -12,6 +12,41 @@ updates:
     directory: "/"
     schedule:
       interval: "quarterly"
+    ignore:
+      # The egui family moves as one and each release is a porting job, not a
+      # bump: egui 0.36 changed to a `Ui`-first API, and egui_plot 0.37 and
+      # eframe track whichever egui they were cut against. A PR raising any
+      # one of them on its own cannot build -- Cargo cannot even resolve two
+      # egui generations in the same binary, because `eframe` re-exports the
+      # `egui` types this crate passes back to it.
+      #
+      # Patch releases still come through, which is where the fixes are. When
+      # the whole family is to move, it is one deliberate change raising all
+      # four together, with the `egui_plot`/`eframe` compatibility table
+      # checked first -- not something to merge from a bot.
+      - dependency-name: "egui"
+        update-types:
+          ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "eframe"
+        update-types:
+          ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "egui_plot"
+        update-types:
+          ["version-update:semver-major", "version-update:semver-minor"]
+      # `wgpu` is reached through eframe's own re-export (`eframe::wgpu`), so
+      # the two versions must be the same one. It moves with the family.
+      - dependency-name: "wgpu"
+        update-types:
+          ["version-update:semver-major", "version-update:semver-minor"]
+      # winit is named directly only so the Android entry point can reach
+      # `EventLoopBuilderExtAndroid`; the version that matters is the one
+      # egui-winit picks, and a bump here would just split them in two.
+      - dependency-name: "winit"
+        update-types:
+          ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "android-activity"
+        update-types:
+          ["version-update:semver-major", "version-update:semver-minor"]
 
   # The workflows pin every action to a major version, and a pinned action that
   # has gone stale is its own kind of breakage — jetli/wasm-pack-action's

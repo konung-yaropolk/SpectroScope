@@ -158,9 +158,18 @@ What the Android build can and cannot do:
   app execute a binary it has written. `rtl_tcp` over the network and `demo`
   are what work, and the manifest already requests `INTERNET`.
 - There is no file dialog, so paths for recording and export are typed.
-- The launcher icon comes from `packaging/android/res/mipmap-*/ic_launcher.png`,
-  downscaled from the committed PNGs. Regenerate them if `icon.svg` changes;
-  nothing rasterizes the SVG, because its mesh gradient needs Inkscape.
+- The launcher icon lives in `packaging/android/res/`, generated from the
+  committed PNGs by `python scripts/gen_android_icons.py`. Re-run it after
+  `icon/generate-icons.bat`; nothing here rasterizes the SVG, because its mesh
+  gradient needs Inkscape.
+
+  Both an adaptive icon and a legacy bitmap come out, and the adaptive one is
+  what matters: `min_sdk_version` is 26, so every device that can install the
+  APK applies "legacy treatment" to a bare bitmap -- it shrinks it and
+  composites it onto a generated white plate, which for a full-bleed tile like
+  ours is a small badge floating in a blob. The adaptive foreground is drawn
+  on the platform's 108dp canvas with the artwork at 72dp, which is exactly
+  the window a launcher shows, so the mask rounds the real artwork instead.
 
 ## Checks
 

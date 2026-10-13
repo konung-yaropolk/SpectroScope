@@ -1076,8 +1076,13 @@ pub fn with_axes(width: u32, height: u32, rgb: &[u8], a: &Annotation) -> (u32, u
     let (ow, oh) = outer_size(width, height, a);
 
     let mut canvas = Canvas::new(ow as usize, oh as usize, SIDE_BG);
-    let pixels: Vec<[u8; 3]> = rgb.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
-    canvas.blit(m.left, m.top, w, h, &pixels);
+    // A reinterpretation, not a copy. The obvious `chunks_exact(3).map(...)
+    // .collect()` allocates a second buffer the same size as the first, and
+    // for a full-depth waterfall that is another 100 MB live at the same time
+    // as `rgb`, the raw f32 rows and the output -- which matters most in the
+    // browser, where the whole address space is 32-bit.
+    let pixels: &[[u8; 3]] = bytemuck::cast_slice(rgb);
+    canvas.blit(m.left, m.top, w, h, pixels);
 
     paint_margins(&mut canvas, &m, a, w, h, BAND_BG, BAND_FG, SIDE_FG);
 
@@ -1310,16 +1315,33 @@ mod tests {
 
     #[test]
     fn the_waterfall_lands_intact_inside_its_margins() {
-        let (rgb, a) = probe(60, 20);
-        let (w, _, out) = with_axes(60, 20, &rgb, &a);
+        // Deliberately not the flat grey `probe` gives: every pixel here is a
+        // different colour and no channel ever equals another, so a blit that
+        // transposed, shifted or rotated the channels could not pass. The
+        // image arrives as a flat `&[u8]` and is reinterpreted as `[u8; 3]`
+        // pixels without copying, and this is what says that reinterpretation
+        // is the right one.
+        let (w, h) = (60usize, 20usize);
+        let (_, a) = probe(w as u32, h as u32);
+        let want = |x: usize, y: usize| {
+            let i = (y * w + x) as u8;
+            [i, i.wrapping_add(71), i.wrapping_add(149)]
+        };
+        let mut rgb = Vec::with_capacity(w * h * 3);
+        for y in 0..h {
+            for x in 0..w {
+                rgb.extend_from_slice(&want(x, y));
+            }
+        }
+
+        let (ow, _, out) = with_axes(w as u32, h as u32, &rgb, &a);
         let at = |x: usize, y: usize| {
-            let i = (y * w as usize + x) * 3;
+            let i = (y * ow as usize + x) * 3;
             [out[i], out[i + 1], out[i + 2]]
         };
-        // Every pixel of the original is where it should be, unmodified.
-        for y in 0..20 {
-            for x in 0..60 {
-                assert_eq!(at(TIME_W + x, BAND_H + y), [128, 128, 128], "at {x},{y}");
+        for y in 0..h {
+            for x in 0..w {
+                assert_eq!(at(TIME_W + x, BAND_H + y), want(x, y), "at {x},{y}");
             }
         }
     }
